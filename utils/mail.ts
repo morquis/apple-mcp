@@ -65,6 +65,32 @@ interface EmailMessage {
   mailbox: string;
 }
 
+interface MailAccount {
+  name: string;
+  id: string;
+  type: string;
+  addresses: string[];
+  enabled: boolean;
+}
+
+interface MailboxInfo {
+  name: string;
+  id: string;
+  unreadCount: number;
+  totalCount: number;
+  children: MailboxInfo[];
+}
+
+interface MailAccountDetails extends MailAccount {
+  server: string;
+  port: number;
+  usesSSL: boolean;
+  authentication: string;
+  fullName: string;
+  accountDirectory: string;
+  deliveryAccount: string;
+}
+
 async function getUnreadMails(limit = 10): Promise<EmailMessage[]> {
   try {
     if (!(await checkMailAccess())) {
@@ -665,6 +691,242 @@ end tell`);
   }
 }
 
+async function getAccountSummaries(): Promise<MailAccount[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const accounts = (await run(() => {
+      const Mail = Application("Mail");
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      return Mail.accounts().map((acc: any) => {
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        let id = "";
+        try { id = String(acc.id()); } catch {}
+        return {
+          name: acc.name(),
+          id,
+          type: acc.accountType ? String(acc.accountType()) : "",
+          addresses: acc.emailAddresses ? acc.emailAddresses() : [],
+          enabled: acc.enabled ? acc.enabled() : false,
+        } as MailAccount;
+      });
+    })) as MailAccount[];
+
+    return accounts;
+  } catch (error) {
+    console.error("Error getting account summaries:", error);
+    throw new Error(
+      `Error getting account summaries: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function getAccountDetails(accountName: string): Promise<MailAccountDetails | undefined> {
+  try {
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
+
+    const details = (await run((name: string) => {
+      const Mail = Application("Mail");
+      const matches = Mail.accounts.whose({ name })();
+      if (!matches || matches.length === 0) return null;
+      const acc = matches[0];
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      let id = "";
+      try { id = String(acc.id()); } catch {}
+      return {
+        name: acc.name(),
+        id,
+        type: acc.accountType ? String(acc.accountType()) : "",
+        addresses: acc.emailAddresses ? acc.emailAddresses() : [],
+        enabled: acc.enabled ? acc.enabled() : false,
+        server: acc.serverName ? acc.serverName() : "",
+        port: acc.port ? acc.port() : 0,
+        usesSSL: acc.usesSSL ? acc.usesSSL() : false,
+        authentication: acc.authentication ? String(acc.authentication()) : "",
+        fullName: acc.fullName ? acc.fullName() : "",
+        accountDirectory: acc.accountDirectory ? acc.accountDirectory().toString() : "",
+        deliveryAccount: acc.deliveryAccount ? acc.deliveryAccount().name() : "",
+      } as MailAccountDetails;
+    }, accountName)) as MailAccountDetails | null;
+
+    if (!details) {
+      throw new Error(`Account '${accountName}' not found`);
+    }
+
+    return details;
+  } catch (error) {
+    console.error("Error getting account details:", error);
+    throw new Error(
+      `Error getting account details: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function getMailboxProperties(
+  accountName: string,
+  mailboxName: string,
+): Promise<MailboxInfo | undefined> {
+  try {
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
+
+    const info = (await run((acct: string, mbx: string) => {
+      const Mail = Application("Mail");
+      const account = Mail.accounts.whose({ name: acct })();
+      if (!account || account.length === 0) return null;
+      const box = account[0].mailboxes.whose({ name: mbx })();
+      if (!box || box.length === 0) return null;
+      const target = box[0];
+
+      let total = 0;
+      try { total = target.messages().length; } catch {}
+      let unread = 0;
+      try { unread = target.unreadCount(); } catch {}
+      let id = "";
+      try { id = String(target.id()); } catch {}
+      const children = [] as MailboxInfo[];
+      try {
+        const childBoxes = target.mailboxes();
+        for (const child of childBoxes) {
+          let cTotal = 0;
+          let cUnread = 0;
+          let cId = "";
+          try { cTotal = child.messages().length; } catch {}
+          try { cUnread = child.unreadCount(); } catch {}
+          try { cId = String(child.id()); } catch {}
+          children.push({
+            name: child.name(),
+            id: cId,
+            unreadCount: cUnread,
+            totalCount: cTotal,
+            children: [],
+          });
+        }
+      } catch {}
+
+      return { name: target.name(), id, unreadCount: unread, totalCount: total, children } as MailboxInfo;
+    }, accountName, mailboxName)) as MailboxInfo | null;
+
+    return info ?? undefined;
+  } catch (error) {
+    console.error("Error getting mailbox properties:", error);
+    throw new Error(
+      `Error getting mailbox properties: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const tree = (await run((acct: string) => {
+      const Mail = Application("Mail");
+      const account = Mail.accounts.whose({ name: acct })();
+      if (!account || account.length === 0) return null;
+
+      function build(box: any): MailboxInfo {
+        let total = 0;
+        let unread = 0;
+        let id = "";
+        try { total = box.messages().length; } catch {}
+        try { unread = box.unreadCount(); } catch {}
+        try { id = String(box.id()); } catch {}
+        const kids: MailboxInfo[] = [];
+        try {
+          const childBoxes = box.mailboxes();
+          for (const child of childBoxes) {
+            kids.push(build(child));
+          }
+        } catch {}
+        return { name: box.name(), id, unreadCount: unread, totalCount: total, children: kids };
+      }
+
+      const mailboxes = account[0].mailboxes();
+      return mailboxes.map((mb: any) => build(mb));
+    }, accountName)) as MailboxInfo[] | null;
+
+    if (!tree) {
+      throw new Error(`Account '${accountName}' not found`);
+    }
+
+    return tree;
+  } catch (error) {
+    console.error("Error getting mailbox tree:", error);
+    throw new Error(
+      `Error getting mailbox tree: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function listMessages(
+  accountName: string,
+  mailboxName: string,
+  opts?: { limit?: number; unreadOnly?: boolean; startDate?: string; endDate?: string },
+): Promise<EmailMessage[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const messages = (await run(
+      (acct: string, mbx: string, options: any) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return [];
+        const box = acc[0].mailboxes.whose({ name: mbx })();
+        if (!box || box.length === 0) return [];
+
+        let msgs = box[0].messages();
+        if (options && options.unreadOnly) {
+          msgs = box[0].messages.whose({ readStatus: false })();
+        }
+        if (options && options.startDate) {
+          const d = new Date(options.startDate);
+          msgs = msgs.whose({ dateSent: { _greaterThanEq: d } })();
+        }
+        if (options && options.endDate) {
+          const d = new Date(options.endDate);
+          msgs = msgs.whose({ dateSent: { _lessThanEq: d } })();
+        }
+
+        const limit = options && options.limit ? options.limit : msgs.length;
+        const result: EmailMessage[] = [];
+        const count = Math.min(msgs.length, limit);
+        for (let i = 0; i < count; i++) {
+          const m = msgs[i];
+          result.push({
+            subject: m.subject(),
+            sender: m.sender(),
+            dateSent: m.dateSent().toString(),
+            content: m.content ? (m.content() as string).substring(0, 500) : "[No content]",
+            isRead: m.readStatus(),
+            mailbox: mbx,
+          });
+        }
+        return result;
+      },
+      accountName,
+      mailboxName,
+      opts ?? {},
+    )) as EmailMessage[];
+
+    return messages;
+  } catch (error) {
+    console.error("Error listing messages:", error);
+    throw new Error(
+      `Error listing messages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export default {
   getUnreadMails,
   searchMails,
@@ -672,4 +934,9 @@ export default {
   getMailboxes,
   getAccounts,
   getMailboxesForAccount,
+  getAccountSummaries,
+  getAccountDetails,
+  getMailboxProperties,
+  getAccountMailboxTree,
+  listMessages,
 };
