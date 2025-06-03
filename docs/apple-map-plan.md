@@ -2,14 +2,18 @@
 
 This document outlines the steps required to implement mailbox reading functions for the **apple-map** tool.  Requirements are derived from `.reference/apple-mail-requirements.md` and the `Mail.sdef` scripting definition.
 
-## 1. Review Existing Implementation
-- `utils/mail.ts` already provides:
-  - `getAccounts()` – returns list of account names only.
-  - `getMailboxes()` – returns flat list of mailbox names.
+## 1. Review of Current Implementation
+- `utils/mail.ts` includes helper functions to communicate with Mail.app.
+  - `getAccounts()` – returns a list of account names.
+  - `getMailboxes()` – returns a flat list of mailbox names.
   - `getMailboxesForAccount(account)` – returns mailbox names for a given account.
-  - Basic message retrieval (`getUnreadMails`, `searchMails`, `sendMail`).
-- There is no structured representation of accounts or nested mailbox hierarchy.
-- No functions to read message lists from an arbitrary mailbox.
+  - `getUnreadMails`, `searchMails`, `sendMail` – basic message operations.
+- **Implemented reading helpers**
+  - `getAccountSummaries()` – structured list of accounts with id, type and addresses.
+  - `getAccountDetails()` – detailed server settings for one account.
+  - `getAccountMailboxTree()` – nested mailbox hierarchy per account.
+  - `getMailboxProperties()` – metadata for a single mailbox.
+  - `listMessages()` – list messages in a specific mailbox with filters.
 
 ## 2. Required Reading Features
 1. **List All Accounts (REQ-ACC-001)**
@@ -63,4 +67,17 @@ This document outlines the steps required to implement mailbox reading functions
 ## 4. Future Steps
 - Implement write operations (create, delete, move mailboxes) after read features are stable.
 - Extend message reading to include attachments and full header retrieval.
+
+## 5. Status
+
+All reading functions described above have been implemented in `utils/mail.ts`.
+Key implementations can be found at:
+
+- `getAccountSummaries` – account list with details【F:utils/mail.ts†L694-L735】
+- `getAccountDetails` – server settings etc.【F:utils/mail.ts†L736-L773】
+- `getMailboxProperties` – mailbox metadata helper【F:utils/mail.ts†L769-L817】
+- `getAccountMailboxTree` – recursive mailbox listing【F:utils/mail.ts†L824-L879】
+- `listMessages` – list messages within a mailbox【F:utils/mail.ts†L880-L938】
+
+With these functions available through the `mail` tool (see `index.ts` around line 620), the Apple Map integration can already read accounts, mailbox structures and messages. Future work can focus on advanced analysis and write operations.
 
