@@ -86,8 +86,19 @@ const CONTACTS_TOOL: Tool = {
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'search', 'send', 'mailboxes', or 'accounts'",
-          enum: ["unread", "search", "send", "mailboxes", "accounts"]
+          description: "Operation to perform: 'unread', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', or 'messages'",
+          enum: [
+            "unread",
+            "search",
+            "send",
+            "mailboxes",
+            "accounts",
+            "accountSummaries",
+            "accountDetails",
+            "mailboxTree",
+            "mailboxProps",
+            "messages"
+          ]
         },
         account: {
           type: "string",
@@ -100,6 +111,18 @@ const CONTACTS_TOOL: Tool = {
         limit: {
           type: "number",
           description: "Number of emails to retrieve (optional, for unread and search operations)"
+        },
+        unreadOnly: {
+          type: "boolean",
+          description: "Only return unread messages (optional for messages operation)"
+        },
+        startDate: {
+          type: "string",
+          description: "Start date filter in ISO format (optional for messages operation)"
+        },
+        endDate: {
+          type: "string",
+          description: "End date filter in ISO format (optional for messages operation)"
         },
         searchTerm: {
           type: "string",

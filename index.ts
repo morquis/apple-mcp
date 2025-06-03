@@ -646,12 +646,77 @@ end tell`;
               case "accounts": {
                 const accounts = await mailModule.getAccounts();
                 return {
-                  content: [{ 
-                    type: "text", 
-                    text: accounts.length > 0 ? 
+                  content: [{
+                    type: "text",
+                    text: accounts.length > 0 ?
                       `Found ${accounts.length} email accounts:\n\n${accounts.join("\n")}` :
                       "No email accounts found. Make sure Mail app is configured with at least one account."
                   }],
+                  isError: false
+                };
+              }
+
+              case "accountSummaries": {
+                const summaries = await mailModule.getAccountSummaries();
+                const formatted = summaries.map(acc =>
+                  `${acc.name} (${acc.type}) - ${acc.enabled ? "enabled" : "disabled"}`
+                ).join("\n");
+                return {
+                  content: [{
+                    type: "text",
+                    text: summaries.length > 0 ?
+                      `Accounts:\n\n${formatted}` :
+                      "No accounts found."
+                  }],
+                  accounts: summaries,
+                  isError: false
+                };
+              }
+
+              case "accountDetails": {
+                const details = await mailModule.getAccountDetails(args.account!);
+                if (!details) {
+                  return { content: [{ type: "text", text: `Account '${args.account}' not found` }], isError: true };
+                }
+                const text = `Account: ${details.name}\nType: ${details.type}\nServer: ${details.server}:${details.port}\nSSL: ${details.usesSSL}\nAddresses: ${details.addresses.join(", ")}`;
+                return {
+                  content: [{ type: "text", text }],
+                  account: details,
+                  isError: false
+                };
+              }
+
+              case "mailboxTree": {
+                const tree = await mailModule.getAccountMailboxTree(args.account!);
+                const formatTree = (boxes: any[], indent = 0): string =>
+                  boxes.map(b => `${" ".repeat(indent)}- ${b.name} (${b.unreadCount}/${b.totalCount})\n${formatTree(b.children, indent + 2)}`).join("");
+                return {
+                  content: [{ type: "text", text: formatTree(tree).trim() }],
+                  mailboxes: tree,
+                  isError: false
+                };
+              }
+
+              case "mailboxProps": {
+                const info = await mailModule.getMailboxProperties(args.account!, args.mailbox!);
+                if (!info) {
+                  return { content: [{ type: "text", text: `Mailbox '${args.mailbox}' not found` }], isError: true };
+                }
+                const text = `${info.name}: ${info.unreadCount} unread of ${info.totalCount}`;
+                return { content: [{ type: "text", text }], mailbox: info, isError: false };
+              }
+
+              case "messages": {
+                const opts = { limit: args.limit, unreadOnly: args.unreadOnly, startDate: args.startDate, endDate: args.endDate };
+                const messages = await mailModule.listMessages(args.account!, args.mailbox!, opts);
+                return {
+                  content: [{
+                    type: "text",
+                    text: messages.length > 0 ?
+                      messages.map(m => `[${m.dateSent}] ${m.sender}: ${m.subject}`).join("\n") :
+                      "No messages found"
+                  }],
+                  messages,
                   isError: false
                 };
               }
@@ -1176,10 +1241,23 @@ function isMessagesArgs(args: unknown): args is {
 }
 
 function isMailArgs(args: unknown): args is {
-  operation: "unread" | "search" | "send" | "mailboxes" | "accounts";
+  operation:
+    | "unread"
+    | "search"
+    | "send"
+    | "mailboxes"
+    | "accounts"
+    | "accountSummaries"
+    | "accountDetails"
+    | "mailboxTree"
+    | "mailboxProps"
+    | "messages";
   account?: string;
   mailbox?: string;
   limit?: number;
+  unreadOnly?: boolean;
+  startDate?: string;
+  endDate?: string;
   searchTerm?: string;
   to?: string;
   subject?: string;
@@ -1189,9 +1267,34 @@ function isMailArgs(args: unknown): args is {
 } {
   if (typeof args !== "object" || args === null) return false;
   
-  const { operation, account, mailbox, limit, searchTerm, to, subject, body, cc, bcc } = args as any;
-  
-  if (!operation || !["unread", "search", "send", "mailboxes", "accounts"].includes(operation)) {
+  const {
+    operation,
+    account,
+    mailbox,
+    limit,
+    unreadOnly,
+    startDate,
+    endDate,
+    searchTerm,
+    to,
+    subject,
+    body,
+    cc,
+    bcc,
+  } = args as any;
+
+  if (!operation || ![
+    "unread",
+    "search",
+    "send",
+    "mailboxes",
+    "accounts",
+    "accountSummaries",
+    "accountDetails",
+    "mailboxTree",
+    "mailboxProps",
+    "messages",
+  ].includes(operation)) {
     return false;
   }
   
@@ -1201,13 +1304,29 @@ function isMailArgs(args: unknown): args is {
       if (!searchTerm || typeof searchTerm !== "string") return false;
       break;
     case "send":
-      if (!to || typeof to !== "string" || 
-          !subject || typeof subject !== "string" || 
+      if (!to || typeof to !== "string" ||
+          !subject || typeof subject !== "string" ||
           !body || typeof body !== "string") return false;
+      break;
+    case "accountDetails":
+      if (!account || typeof account !== "string") return false;
+      break;
+    case "mailboxTree":
+      if (!account || typeof account !== "string") return false;
+      break;
+    case "mailboxProps":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      break;
+    case "messages":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (startDate && typeof startDate !== "string") return false;
+      if (endDate && typeof endDate !== "string") return false;
+      if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       break;
     case "unread":
     case "mailboxes":
     case "accounts":
+    case "accountSummaries":
       // No additional required fields
       break;
   }
@@ -1216,6 +1335,9 @@ function isMailArgs(args: unknown): args is {
   if (account && typeof account !== "string") return false;
   if (mailbox && typeof mailbox !== "string") return false;
   if (limit && typeof limit !== "number") return false;
+  if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
+  if (startDate && typeof startDate !== "string") return false;
+  if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
   
