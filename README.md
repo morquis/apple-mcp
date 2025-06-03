@@ -60,6 +60,10 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Schedule emails for future delivery
   - List and manage scheduled emails
   - Check unread email counts globally or per mailbox
+  - List configured accounts with type and status
+  - Retrieve detailed account settings
+  - Display mailbox hierarchy and properties
+  - List messages from a specific mailbox with filters
 - Reminders:
   - List all reminders and reminder lists
   - Search for reminders by text
