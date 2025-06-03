@@ -84,9 +84,12 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Drop pins on the map
   - Create and list guides
   - Add places to guides
-
-- TODO: Search and open photos in Apple Photos app
-- TODO: Search and open music in Apple Music app
+- Photos:
+  - Search photos by name
+  - Open a specific photo
+- Music:
+  - Search library songs
+  - Play a specific song
 
 
 You can also daisy-chain commands to create a workflow. Like:
