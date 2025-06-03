@@ -328,6 +328,73 @@ const MAPS_TOOL: Tool = {
   }
 };
 
-const tools = [CONTACTS_TOOL, NOTES_TOOL, MESSAGES_TOOL, MAIL_TOOL, REMINDERS_TOOL, WEB_SEARCH_TOOL, CALENDAR_TOOL, MAPS_TOOL];
+const PHOTOS_TOOL: Tool = {
+  name: "photos",
+  description: "Search and open photos in Apple Photos app",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operation: {
+        type: "string",
+        description: "Operation to perform with Photos",
+        enum: ["search", "open"],
+      },
+      query: {
+        type: "string",
+        description: "Search query for photos (required for search)",
+      },
+      identifier: {
+        type: "string",
+        description: "Identifier or name of the photo to open (required for open)",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results to return for search",
+      },
+    },
+    required: ["operation"],
+  },
+};
+
+const MUSIC_TOOL: Tool = {
+  name: "music",
+  description: "Search and play songs in Apple Music app",
+  inputSchema: {
+    type: "object",
+    properties: {
+      operation: {
+        type: "string",
+        description: "Operation to perform with Music",
+        enum: ["search", "play"],
+      },
+      query: {
+        type: "string",
+        description: "Search query for songs (required for search)",
+      },
+      identifier: {
+        type: "string",
+        description: "Persistent ID or name of the song to play (required for play)",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results to return for search",
+      },
+    },
+    required: ["operation"],
+  },
+};
+
+const tools = [
+  CONTACTS_TOOL,
+  NOTES_TOOL,
+  MESSAGES_TOOL,
+  MAIL_TOOL,
+  REMINDERS_TOOL,
+  WEB_SEARCH_TOOL,
+  CALENDAR_TOOL,
+  MAPS_TOOL,
+  PHOTOS_TOOL,
+  MUSIC_TOOL,
+];
 
 export default tools;

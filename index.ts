@@ -28,6 +28,8 @@ let reminders: typeof import('./utils/reminders').default | null = null;
 let webSearch: typeof import('./utils/webSearch').default | null = null;
 let calendar: typeof import('./utils/calendar').default | null = null;
 let maps: typeof import('./utils/maps').default | null = null;
+let photos: typeof import('./utils/photos').default | null = null;
+let music: typeof import('./utils/music').default | null = null;
 
 // Type map for module names to their types
 type ModuleMap = {
@@ -39,10 +41,12 @@ type ModuleMap = {
   webSearch: typeof import('./utils/webSearch').default;
   calendar: typeof import('./utils/calendar').default;
   maps: typeof import('./utils/maps').default;
+  photos: typeof import('./utils/photos').default;
+  music: typeof import('./utils/music').default;
 };
 
 // Helper function for lazy module loading
-async function loadModule<T extends 'contacts' | 'notes' | 'message' | 'mail' | 'reminders' | 'webSearch' | 'calendar' | 'maps'>(moduleName: T): Promise<ModuleMap[T]> {
+async function loadModule<T extends 'contacts' | 'notes' | 'message' | 'mail' | 'reminders' | 'webSearch' | 'calendar' | 'maps' | 'photos' | 'music'>(moduleName: T): Promise<ModuleMap[T]> {
   if (safeModeFallback) {
     console.error(`Loading ${moduleName} module on demand (safe mode)...`);
   }
@@ -73,6 +77,12 @@ async function loadModule<T extends 'contacts' | 'notes' | 'message' | 'mail' | 
       case 'maps':
         if (!maps) maps = (await import('./utils/maps')).default;
         return maps as ModuleMap[T];
+      case 'photos':
+        if (!photos) photos = (await import('./utils/photos')).default;
+        return photos as ModuleMap[T];
+      case 'music':
+        if (!music) music = (await import('./utils/music')).default;
+        return music as ModuleMap[T];
       default:
         throw new Error(`Unknown module: ${moduleName}`);
     }
@@ -124,12 +134,18 @@ async function attemptEagerLoading() {
 
     webSearch = (await import('./utils/webSearch')).default;
     console.error("- WebSearch module loaded successfully");
-    
+
     calendar = (await import('./utils/calendar')).default;
     console.error("- Calendar module loaded successfully");
-    
+
     maps = (await import('./utils/maps')).default;
     console.error("- Maps module loaded successfully");
+
+    photos = (await import('./utils/photos')).default;
+    console.error("- Photos module loaded successfully");
+
+    music = (await import('./utils/music')).default;
+    console.error("- Music module loaded successfully");
     
     // If we get here, clear the timeout and proceed with eager loading
     if (loadingTimeout) {
@@ -162,7 +178,9 @@ async function attemptEagerLoading() {
     webSearch = null;
     calendar = null;
     maps = null;
-    
+    photos = null;
+    music = null;
+
     // Initialize the server in safe mode
     initServer();
   }
@@ -1098,6 +1116,94 @@ end tell`;
           }
         }
 
+        case "photos": {
+          if (!isPhotosArgs(args)) {
+            throw new Error("Invalid arguments for photos tool");
+          }
+
+          try {
+            const photosModule = await loadModule('photos');
+            const { operation } = args;
+
+            if (operation === "search") {
+              const { query, limit } = args;
+              if (!query) {
+                throw new Error("Search query is required for search operation");
+              }
+              const result = await photosModule.searchPhotos(query, limit);
+              return {
+                content: [{ type: "text", text: result.message }],
+                photos: result.photos,
+                isError: !result.success,
+              };
+            } else if (operation === "open") {
+              const { identifier } = args;
+              if (!identifier) {
+                throw new Error("Identifier is required for open operation");
+              }
+              const result = await photosModule.openPhoto(identifier);
+              return {
+                content: [{ type: "text", text: result.message }],
+                isError: !result.success,
+              };
+            }
+
+            throw new Error(`Unknown photos operation: ${operation}`);
+          } catch (error) {
+            return {
+              content: [{
+                type: "text",
+                text: `Error in photos tool: ${error instanceof Error ? error.message : String(error)}`
+              }],
+              isError: true
+            };
+          }
+        }
+
+        case "music": {
+          if (!isMusicArgs(args)) {
+            throw new Error("Invalid arguments for music tool");
+          }
+
+          try {
+            const musicModule = await loadModule('music');
+            const { operation } = args;
+
+            if (operation === "search") {
+              const { query, limit } = args;
+              if (!query) {
+                throw new Error("Search query is required for search operation");
+              }
+              const result = await musicModule.searchSongs(query, limit);
+              return {
+                content: [{ type: "text", text: result.message }],
+                tracks: result.tracks,
+                isError: !result.success,
+              };
+            } else if (operation === "play") {
+              const { identifier } = args;
+              if (!identifier) {
+                throw new Error("Identifier is required for play operation");
+              }
+              const result = await musicModule.playSong(identifier);
+              return {
+                content: [{ type: "text", text: result.message }],
+                isError: !result.success,
+              };
+            }
+
+            throw new Error(`Unknown music operation: ${operation}`);
+          } catch (error) {
+            return {
+              content: [{
+                type: "text",
+                text: `Error in music tool: ${error instanceof Error ? error.message : String(error)}`
+              }],
+              isError: true
+            };
+          }
+        }
+
         default:
           return {
             content: [{ type: "text", text: `Unknown tool: ${name}` }],
@@ -1519,6 +1625,80 @@ function isMapsArgs(args: unknown): args is {
     if (typeof address !== "string" || address === "" || typeof guideName !== "string" || guideName === "") {
       return false;
     }
+  }
+
+  return true;
+}
+
+function isPhotosArgs(args: unknown): args is {
+  operation: "search" | "open";
+  query?: string;
+  identifier?: string;
+  limit?: number;
+} {
+  if (typeof args !== "object" || args === null) {
+    return false;
+  }
+
+  const { operation } = args as { operation?: unknown };
+  if (typeof operation !== "string" || !["search", "open"].includes(operation)) {
+    return false;
+  }
+
+  if (operation === "search") {
+    const { query } = args as { query?: unknown };
+    if (typeof query !== "string" || query === "") {
+      return false;
+    }
+  }
+
+  if (operation === "open") {
+    const { identifier } = args as { identifier?: unknown };
+    if (typeof identifier !== "string" || identifier === "") {
+      return false;
+    }
+  }
+
+  const { limit } = args as { limit?: unknown };
+  if (limit !== undefined && typeof limit !== "number") {
+    return false;
+  }
+
+  return true;
+}
+
+function isMusicArgs(args: unknown): args is {
+  operation: "search" | "play";
+  query?: string;
+  identifier?: string;
+  limit?: number;
+} {
+  if (typeof args !== "object" || args === null) {
+    return false;
+  }
+
+  const { operation } = args as { operation?: unknown };
+  if (typeof operation !== "string" || !["search", "play"].includes(operation)) {
+    return false;
+  }
+
+  if (operation === "search") {
+    const { query } = args as { query?: unknown };
+    if (typeof query !== "string" || query === "") {
+      return false;
+    }
+  }
+
+  if (operation === "play") {
+    const { identifier } = args as { identifier?: unknown };
+    if (typeof identifier !== "string" || identifier === "") {
+      return false;
+    }
+  }
+
+  const { limit } = args as { limit?: unknown };
+  if (limit !== undefined && typeof limit !== "number") {
+    return false;
   }
 
   return true;
