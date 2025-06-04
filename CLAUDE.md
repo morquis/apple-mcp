@@ -2,7 +2,8 @@
 
 ## Commands
 - `bun run dev` - Start the development server
-- No specific test or lint commands defined in package.json
+- `bun run lint` - Check code style with ESLint
+- `bun test` - Run the test suite
 
 ## Code Style
 
