@@ -143,6 +143,8 @@ create a mailbox "Project" under "Work" account and then move it into "Archive"
 git clone https://github.com/dhravya/apple-mcp.git
 cd apple-mcp
 bun install
+bun run lint
+bun test
 bun run index.ts
 ```
 
