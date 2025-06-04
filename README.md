@@ -23,6 +23,7 @@ Here's a step-by-step video about how to set this up, with a demo. - https://x.c
       "command": "bunx",
       "args": ["--no-cache", "apple-mcp@latest"]
     }
+  }
 }
 
 ```
