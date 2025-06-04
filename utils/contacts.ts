@@ -64,7 +64,7 @@ async function findNumber(name: string) {
     // If no numbers found, run getNumbers() to find the closest match
     if (nums.length === 0) {
       const allNumbers = await getAllNumbers();
-      const closestMatch = Object.keys(allNumbers).find(personName => 
+      const closestMatch = Object.keys(allNumbers).find(personName =>
         personName.toLowerCase().includes(name.toLowerCase())
       );
       return closestMatch ? allNumbers[closestMatch] : [];
@@ -84,16 +84,16 @@ async function findContactByPhone(phoneNumber: string): Promise<string | null> {
 
     // Normalize the phone number for comparison
     const searchNumber = phoneNumber.replace(/[^0-9+]/g, '');
-    
+
     // Get all contacts and their numbers
     const allContacts = await getAllNumbers();
-    
+
     // Look for a match
     for (const [name, numbers] of Object.entries(allContacts)) {
       const normalizedNumbers = numbers.map(num => num.replace(/[^0-9+]/g, ''));
-      if (normalizedNumbers.some(num => 
-        num === searchNumber || 
-        num === `+${searchNumber}` || 
+      if (normalizedNumbers.some(num =>
+        num === searchNumber ||
+        num === `+${searchNumber}` ||
         num === `+1${searchNumber}` ||
         `+1${num}` === searchNumber
       )) {

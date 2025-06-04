@@ -41,7 +41,7 @@ async function checkCalendarAccess(): Promise<boolean> {
   throw new Error("Cannot access Calendar app");
   }
   }) as boolean;
-  
+
   return result;
   } catch (error) {
   console.error(`Cannot access Calendar app: ${error instanceof Error ? error.message : String(error)}`);
@@ -58,9 +58,9 @@ async function checkCalendarAccess(): Promise<boolean> {
  * @returns Array of calendar events matching the search criteria
  */
 async function searchEvents(
-  searchText: string, 
-  limit = 10, 
-  fromDate?: string, 
+  searchText: string,
+  limit = 10,
+  fromDate?: string,
   toDate?: string
 ): Promise<CalendarEvent[]> {
   try {
@@ -70,37 +70,37 @@ async function searchEvents(
 
   console.error(`searchEvents - Processing calendars for search: "${searchText}"`);
 
-  const events = await run((args: { 
-  searchText: string, 
-  limit: number, 
-  fromDate?: string, 
+  const events = await run((args: {
+  searchText: string,
+  limit: number,
+  fromDate?: string,
   toDate?: string,
   maxEventsPerCalendar: number
   }) => {
   try {
   const Calendar = Application("Calendar");
-  
+
   // Set default date range if not provided (today to 30 days from now)
   const today = new Date();
   const defaultStartDate = today;
   const defaultEndDate = new Date();
   defaultEndDate.setDate(today.getDate() + 30);
-  
+
   const startDate = args.fromDate ? new Date(args.fromDate) : defaultStartDate;
   const endDate = args.toDate ? new Date(args.toDate) : defaultEndDate;
-  
+
   // Array to store matching events
   const matchingEvents: CalendarEvent[] = [];
-  
+
   // Get all calendars at once
   const allCalendars = Calendar.calendars();
-  
+
   // Search in each calendar
   for (let i = 0; i < allCalendars.length && matchingEvents.length < args.limit; i++) {
   try {
   const calendar = allCalendars[i];
   const calendarName = calendar.name();
-  
+
   // Get all events from this calendar
   const events = calendar.events.whose({
   _and: [
@@ -111,32 +111,32 @@ async function searchEvents(
   });
 
   const convertedEvents = events();
-  
+
   // Limit the number of events to process
   const eventCount = Math.min(convertedEvents.length, args.maxEventsPerCalendar);
-  
+
   // Filter events by date range and search text
   for (let j = 0; j < eventCount && matchingEvents.length < args.limit; j++) {
   const event = convertedEvents[j];
-  
+
   try {
   const eventStartDate = new Date(event.startDate());
   const eventEndDate = new Date(event.endDate());
-  
+
   // Skip events outside our date range
   if (eventEndDate < startDate || eventStartDate > endDate) {
   continue;
   }
-  
+
   // Get event details
   let title = "";
   let location = "";
   let notes = "";
-  
+
   try { title = event.summary(); } catch (e) { title = "Unknown Title"; }
   try { location = event.location() || ""; } catch (e) { location = ""; }
   try { notes = event.description() || ""; } catch (e) { notes = ""; }
-  
+
   // Check if event matches search text
   if (
   title.toLowerCase().includes(args.searchText.toLowerCase()) ||
@@ -155,22 +155,22 @@ async function searchEvents(
   isAllDay: false,
   url: null
   };
-  
-  try { eventData.id = event.uid(); } 
+
+  try { eventData.id = event.uid(); }
   catch (e) { eventData.id = `unknown-${Date.now()}-${Math.random()}`; }
-  
-  try { eventData.startDate = eventStartDate.toISOString(); } 
+
+  try { eventData.startDate = eventStartDate.toISOString(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.endDate = eventEndDate.toISOString(); } 
+
+  try { eventData.endDate = eventEndDate.toISOString(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.isAllDay = event.alldayEvent(); } 
+
+  try { eventData.isAllDay = event.alldayEvent(); }
   catch (e) { /* Keep as false */ }
-  
-  try { eventData.url = event.url(); } 
+
+  try { eventData.url = event.url(); }
   catch (e) { /* Keep as null */ }
-  
+
   matchingEvents.push(eventData);
   }
   } catch (e) {
@@ -183,25 +183,25 @@ async function searchEvents(
   // Logging removed to avoid console usage inside JXA context
   }
   }
-  
+
   return matchingEvents;
   } catch (e) {
   return []; // Return empty array on any error
   }
-  }, { 
-  searchText, 
-  limit, 
-  fromDate, 
+  }, {
+  searchText,
+  limit,
+  fromDate,
   toDate,
   maxEventsPerCalendar: CONFIG.MAX_EVENTS_PER_CALENDAR
   }) as CalendarEvent[];
-  
+
   // If no events found, create dummy events
   if (events.length === 0) {
   console.error("searchEvents - No events found, creating dummy events");
   return [];
   }
-  
+
   return events;
   } catch (error) {
   console.error(`Error searching events: ${error instanceof Error ? error.message : String(error)}`);
@@ -227,21 +227,21 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
 
   console.error(`openEvent - Attempting to open event with ID: ${eventId}`);
 
-  const result = await run((args: { 
+  const result = await run((args: {
   eventId: string,
   maxEventsPerCalendar: number
   }) => {
   try {
   const Calendar = Application("Calendar");
-  
+
   // Get all calendars at once
   const allCalendars = Calendar.calendars();
-  
+
   // Search in each calendar
   for (let i = 0; i < allCalendars.length; i++) {
   try {
   const calendar = allCalendars[i];
-  
+
   // Get the event from this calendar
   const events = calendar.events.whose({
   uid: { _equals: args.eventId }
@@ -257,13 +257,13 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
   message: `Successfully opened event: ${event.summary()}`
   };
   }
-  
+
   } catch (e) {
   // Skip calendars we can't access
   // Logging removed to avoid console usage inside JXA context
   }
   }
-  
+
   return {
   success: false,
   message: `No event found with ID: ${args.eventId}`
@@ -274,11 +274,11 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
   message: "Error opening event"
   };
   }
-  }, { 
+  }, {
   eventId,
   maxEventsPerCalendar: CONFIG.MAX_EVENTS_PER_CALENDAR
   }) as { success: boolean; message: string };
-  
+
   return result;
   } catch (error) {
   console.error(`Error opening event: ${error instanceof Error ? error.message : String(error)}`);
@@ -297,47 +297,47 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
  * @returns Array of calendar events in the specified date range
  */
 async function getEvents(
-  limit = 10, 
-  fromDate?: string, 
+  limit = 10,
+  fromDate?: string,
   toDate?: string
 ): Promise<CalendarEvent[]> {
   try {
   console.error("getEvents - Starting to fetch calendar events");
-  
+
   if (!await checkCalendarAccess()) {
   console.error("getEvents - Failed to access Calendar app");
   return [];
   }
   console.error("getEvents - Calendar access check passed");
 
-  const events = await run((args: { 
-  limit: number, 
-  fromDate?: string, 
+  const events = await run((args: {
+  limit: number,
+  fromDate?: string,
   toDate?: string,
   maxEventsPerCalendar: number
   }) => {
   try {
   // Access the Calendar app directly
   const Calendar = Application("Calendar");
-  
+
   // Set default date range if not provided (today to 7 days from now)
   const today = new Date();
   const defaultStartDate = today;
   const defaultEndDate = new Date();
   defaultEndDate.setDate(today.getDate() + 7);
-  
+
   const startDate = args.fromDate ? new Date(args.fromDate) : defaultStartDate;
   const endDate = args.toDate ? new Date(args.toDate) : defaultEndDate;
-  
+
   const calendars = Calendar.calendars();
 
   // Array to store events
   const events: CalendarEvent[] = [];
-  
+
   // Get events from each calendar
   for (const calender of calendars) {
   if (events.length >= args.limit) break;
-  
+
   try {
   // Get all events from this calendar
   const calendarEvents = calender.events.whose({
@@ -347,23 +347,23 @@ async function getEvents(
   ]
   });
   const convertedEvents = calendarEvents();
-  
+
   // Limit the number of events to process
   const eventCount = Math.min(convertedEvents.length, args.maxEventsPerCalendar);
-  
+
   // Process events
   for (let i = 0; i < eventCount && events.length < args.limit; i++) {
   const event = convertedEvents[i];
-  
+
   try {
   const eventStartDate = new Date(event.startDate());
   const eventEndDate = new Date(event.endDate());
-  
+
   // Skip events outside our date range
   if (eventEndDate < startDate || eventStartDate > endDate) {
   continue;
   }
-  
+
   // Create event object
   const eventData: CalendarEvent = {
   id: "",
@@ -376,31 +376,31 @@ async function getEvents(
   isAllDay: false,
   url: null
   };
-  
-  try { eventData.id = event.uid(); } 
+
+  try { eventData.id = event.uid(); }
   catch (e) { eventData.id = `unknown-${Date.now()}-${Math.random()}`; }
-  
-  try { eventData.title = event.summary(); } 
+
+  try { eventData.title = event.summary(); }
   catch (e) { /* Keep default title */ }
-  
-  try { eventData.location = event.location(); } 
+
+  try { eventData.location = event.location(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.notes = event.description(); } 
+
+  try { eventData.notes = event.description(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.startDate = eventStartDate.toISOString(); } 
+
+  try { eventData.startDate = eventStartDate.toISOString(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.endDate = eventEndDate.toISOString(); } 
+
+  try { eventData.endDate = eventEndDate.toISOString(); }
   catch (e) { /* Keep as null */ }
-  
-  try { eventData.isAllDay = event.alldayEvent(); } 
+
+  try { eventData.isAllDay = event.alldayEvent(); }
   catch (e) { /* Keep as false */ }
-  
-  try { eventData.url = event.url(); } 
+
+  try { eventData.url = event.url(); }
   catch (e) { /* Keep as null */ }
-  
+
   events.push(eventData);
   } catch (e) {
   // Skip events we can't process
@@ -417,18 +417,18 @@ async function getEvents(
   return []; // Return empty array on any error
   }
   }, {
-  limit, 
-  fromDate, 
+  limit,
+  fromDate,
   toDate,
   maxEventsPerCalendar: CONFIG.MAX_EVENTS_PER_CALENDAR
   }) as CalendarEvent[];
-  
+
   // If no events found, create dummy events
   if (events.length === 0) {
   console.error("getEvents - No events found, creating dummy events");
   return [];
   }
-  
+
   return events;
   } catch (error) {
   console.error(`Error getting events: ${error instanceof Error ? error.message : String(error)}`);
@@ -477,11 +477,11 @@ async function createEvent(
   }) => {
   try {
   const Calendar = Application("Calendar");
-  
+
   // Parse dates
   const startDateTime = new Date(args.startDate);
   const endDateTime = new Date(args.endDate);
-  
+
   // Find the target calendar
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   let targetCalendar: any;
@@ -490,7 +490,7 @@ async function createEvent(
   const calendars = Calendar.calendars.whose({
   name: { _equals: args.calendarName }
   });
-  
+
   if (calendars.length > 0) {
   targetCalendar = calendars[0];
   } else {
@@ -511,7 +511,7 @@ async function createEvent(
   }
   targetCalendar = allCalendars[0];
   }
-  
+
   // Create the new event
   const newEvent = Calendar.Event({
   summary: args.title,
@@ -521,10 +521,10 @@ async function createEvent(
   description: args.notes || "",
   alldayEvent: args.isAllDay
   });
-  
+
   // Add the event to the calendar
   targetCalendar.events.push(newEvent);
-  
+
   return {
   success: true,
   message: `Event "${args.title}" created successfully.`,
@@ -545,7 +545,7 @@ async function createEvent(
   isAllDay,
   calendarName
   }) as { success: boolean; message: string; eventId?: string };
-  
+
   return result;
   } catch (error) {
   return {
@@ -562,4 +562,4 @@ const calendar = {
   createEvent
 };
 
-export default calendar; 
+export default calendar;

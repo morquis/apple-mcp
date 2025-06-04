@@ -38,7 +38,7 @@ async function makeRequest(
 ): Promise<string> {
   const retries = options.retries || 2;
   let lastError: Error | null = null;
-  
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await fetch(url, {
@@ -59,22 +59,22 @@ async function makeRequest(
       return response.text();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      
+
       // Don't retry if it's an aborted request or timeout
       if (error instanceof DOMException && error.name === 'AbortError') {
         break;
       }
-      
+
       // Only retry if we have attempts left
       if (attempt === retries) {
         break;
       }
-      
+
       // Wait before retry (exponential backoff)
       await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
     }
   }
-  
+
   throw lastError || new Error('Request failed');
 }
 
@@ -83,7 +83,7 @@ async function makeRequest(
  */
 function cleanHTML(text: string): string {
   if (!text) return '';
-  
+
   // Basic HTML entity decoding
   let decodedText = text
     .replace(/&amp;/g, "&")
@@ -96,7 +96,7 @@ function cleanHTML(text: string): string {
 
   // Remove HTML tags
   decodedText = decodedText.replace(/<[^>]+>/g, "");
-  
+
   // Normalize whitespace
   decodedText = decodedText.replace(/\s+/g, " ").trim();
 
@@ -156,7 +156,7 @@ async function searchDuckDuckGo(query: string): Promise<SearchResponse> {
     const encodedQuery = encodeURIComponent(query);
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodedQuery}`;
 
-    const html = await makeRequest(searchUrl, { 
+    const html = await makeRequest(searchUrl, {
       timeout: 10000,
       retries: 2
     });
@@ -171,7 +171,7 @@ async function searchDuckDuckGo(query: string): Promise<SearchResponse> {
           results: alternativeResults
         };
       }
-      
+
       return {
         query,
         results: [],
@@ -199,18 +199,18 @@ async function searchDuckDuckGo(query: string): Promise<SearchResponse> {
  */
 function extractDDGResultsAlternative(html: string): SearchResult[] {
   const results: SearchResult[] = [];
-  
+
   try {
     // Try to find result blocks with a more general approach
     const links = html.match(/<h2 class="result__title">.*?<a rel="nofollow" class="result__a".*?href=".*?uddg=(.*?)(?:&|").*?>(.*?)<\/a>.*?<a class="result__snippet".*?>(.*?)<\/a>/gs);
-    
+
     if (!links) return results;
-    
+
     for (const link of links) {
       const titleMatch = link.match(/<a rel="nofollow" class="result__a".*?>(.*?)<\/a>/s);
       const urlMatch = link.match(/href=".*?uddg=(.*?)(?:&|")/);
       const snippetMatch = link.match(/<a class="result__snippet".*?>(.*?)<\/a>/s);
-      
+
       if (titleMatch && urlMatch) {
         results.push({
           title: cleanHTML(titleMatch[1]),
@@ -223,7 +223,7 @@ function extractDDGResultsAlternative(html: string): SearchResult[] {
   } catch (error) {
     console.error("Alternative extraction failed:", error);
   }
-  
+
   return results;
 }
 
@@ -232,7 +232,7 @@ function extractDDGResultsAlternative(html: string): SearchResult[] {
  */
 function extractMainContent(content: string): string {
   if (!content) return '';
-  
+
   try {
     // Remove common non-content elements
     const cleanedContent = content
@@ -255,7 +255,7 @@ function extractMainContent(content: string): string {
     ];
 
     let mainContent = '';
-    
+
     // Try each selector in order of priority
     for (const selector of contentSelectors) {
       const matches = cleanedContent.match(selector);
@@ -265,7 +265,7 @@ function extractMainContent(content: string): string {
         break;
       }
     }
-    
+
     // If no content found, use the whole HTML as fallback
     if (!mainContent) {
       mainContent = cleanedContent;
@@ -295,14 +295,14 @@ async function fetchPageContent(
 ): Promise<{ url: string; content: string | null; error?: string }> {
   try {
     // Set a shorter timeout for content requests
-    const html = await makeRequest(url, { 
+    const html = await makeRequest(url, {
       timeout: 15000,
       retries: 1,
       headers: {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       }
     });
-    
+
     let content = '';
     try {
       content = extractMainContent(html);
@@ -352,7 +352,7 @@ export async function webSearch(query: string): Promise<ContentResponse> {
 
     // Step 2: Fetch content for each result (limit to 5 results to improve performance)
     const resultsToProcess = searchResults.results.slice(0, 5);
-    
+
     // Use Promise.allSettled to ensure all requests complete, even if some fail
     const settledPromises = await Promise.allSettled(
       resultsToProcess.map(result => fetchPageContent(result.url))
@@ -361,7 +361,7 @@ export async function webSearch(query: string): Promise<ContentResponse> {
     // Process results
     const fullResults = resultsToProcess.map((result, index) => {
       const promise = settledPromises[index];
-      
+
       if (promise.status === "fulfilled") {
         return {
           ...result,

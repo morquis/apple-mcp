@@ -29,25 +29,25 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = MAX_RETR
 function normalizePhoneNumber(phone: string): string[] {
   // Remove all non-numeric characters except +
   const cleaned = phone.replace(/[^0-9+]/g, '');
-  
+
   // If it's already in the correct format (+1XXXXXXXXXX), return just that
   if (/^\+1\d{10}$/.test(cleaned)) {
     return [cleaned];
   }
-  
+
   // If it starts with 1 and has 11 digits total
   if (/^1\d{10}$/.test(cleaned)) {
     return [`+${cleaned}`];
   }
-  
+
   // If it's 10 digits
   if (/^\d{10}$/.test(cleaned)) {
     return [`+1${cleaned}`];
   }
-  
+
   // If none of the above match, try multiple formats
   const formats = new Set<string>();
-  
+
   if (cleaned.startsWith('+1')) {
     formats.add(cleaned);
   } else if (cleaned.startsWith('1')) {
@@ -55,7 +55,7 @@ function normalizePhoneNumber(phone: string): string[] {
   } else {
     formats.add(`+1${cleaned}`);
   }
-  
+
   return Array.from(formats);
 }
 
@@ -83,10 +83,10 @@ async function checkMessagesDBAccess(): Promise<boolean> {
   try {
     const dbPath = `${process.env.HOME}/Library/Messages/chat.db`;
     await access(dbPath);
-    
+
     // Additional check - try to query the database
     await execAsync(`sqlite3 "${dbPath}" "SELECT 1;"`);
-    
+
     return true;
   } catch (error) {
     console.error(`
@@ -110,7 +110,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
     // Convert hex to buffer
     const buffer = Buffer.from(hexString, 'hex');
     const content = buffer.toString();
-    
+
     // Common patterns in attributedBody
     const patterns = [
       /NSString">(.*?)</,           // Basic NSString pattern
@@ -121,7 +121,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
       /text[^>]*>(.*?)</,           // Generic XML-style text
       /message>(.*?)</              // Generic message content
     ];
-    
+
     // Try each pattern
     let text = '';
     for (const pattern of patterns) {
@@ -133,7 +133,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
         }
       }
     }
-    
+
     // Look for URLs
     const urlPatterns = [
       /(https?:\/\/[^\s<"]+)/,      // Standard URLs
@@ -141,7 +141,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
       /"url":\s*"(https?:\/\/[^"]+)"/, // URLs in JSON format
       /link[^>]*>(https?:\/\/[^<]+)/ // URLs in XML-style tags
     ];
-    
+
     let url: string | undefined;
     for (const pattern of urlPatterns) {
       const match = content.match(pattern);
@@ -150,7 +150,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
         break;
       }
     }
-    
+
     if (!text && !url) {
       // Try to extract any readable text content
       const readableText = content
@@ -162,7 +162,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
         .replace(/[^\x20-\x7E]/g, ' ') // Replace non-printable chars with space
         .replace(/\s+/g, ' ')          // Normalize whitespace
         .trim();
-      
+
       if (readableText.length > 5) {    // Only use if we got something substantial
         text = readableText;
       } else {
@@ -178,7 +178,7 @@ function decodeAttributedBody(hexString: string): { text: string; url?: string }
         .replace(/\s+/g, ' ') // Normalize whitespace
         .trim();
     }
-    
+
     return { text: text || url || '', url };
   } catch (error) {
     console.error('Error decoding attributedBody:', error);
@@ -191,17 +191,17 @@ async function getAttachmentPaths(messageId: number): Promise<string[]> {
     const query = `
       SELECT filename
       FROM attachment
-      INNER JOIN message_attachment_join 
+      INNER JOIN message_attachment_join
       ON attachment.ROWID = message_attachment_join.attachment_id
       WHERE message_attachment_join.message_id = ${messageId}
     `;
-    
+
     const { stdout } = await execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`);
-    
+
     if (!stdout.trim()) {
       return [];
     }
-    
+
     const attachments = JSON.parse(stdout) as { filename: string }[];
     return attachments.map(a => a.filename).filter(Boolean);
   } catch (error) {
@@ -221,14 +221,14 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
     // Get all possible formats of the phone number
     const phoneFormats = normalizePhoneNumber(phoneNumber);
     console.error("Trying phone formats:", phoneFormats);
-    
+
     // Create SQL IN clause with all phone number formats
     const phoneList = phoneFormats.map(p => `'${p.replace(/'/g, "''")}'`).join(',');
-    
+
     const query = `
-      SELECT 
+      SELECT
         m.ROWID as message_id,
-        CASE 
+        CASE
           WHEN m.text IS NOT NULL AND m.text != '' THEN m.text
           WHEN m.attributedBody IS NOT NULL THEN hex(m.attributedBody)
           ELSE NULL
@@ -239,27 +239,27 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
         m.is_audio_message,
         m.cache_has_attachments,
         m.subject,
-        CASE 
+        CASE
           WHEN m.text IS NOT NULL AND m.text != '' THEN 0
           WHEN m.attributedBody IS NOT NULL THEN 1
           ELSE 2
         END as content_type
-      FROM message m 
-      INNER JOIN handle h ON h.ROWID = m.handle_id 
+      FROM message m
+      INNER JOIN handle h ON h.ROWID = m.handle_id
       WHERE h.id IN (${phoneList})
         AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
         AND m.is_from_me IS NOT NULL  -- Ensure it's a real message
         AND m.item_type = 0  -- Regular messages only
         AND m.is_audio_message = 0  -- Skip audio messages
-      ORDER BY m.date DESC 
+      ORDER BY m.date DESC
       LIMIT ${limit}
     `;
 
     // Execute query with retries
-    const { stdout } = await retryOperation(() => 
+    const { stdout } = await retryOperation(() =>
       execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
     );
-    
+
     if (!stdout.trim()) {
       console.error("No messages found in database for the given phone number");
       return [];
@@ -280,7 +280,7 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
         .map(async msg => {
           let content = msg.content || '';
           let url: string | undefined;
-          
+
           // If it's an attributedBody (content_type = 1), decode it
           if (msg.content_type === 1) {
             const decoded = decodeAttributedBody(content);
@@ -293,18 +293,18 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
               url = urlMatch[1];
             }
           }
-          
+
           // Get attachments if any
           let attachments: string[] = [];
           if (msg.cache_has_attachments) {
             attachments = await getAttachmentPaths(msg.message_id);
           }
-          
+
           // Add subject if present
           if (msg.subject) {
             content = `Subject: ${msg.subject}\n${content}`;
           }
-          
+
           // Format the message object
           const formattedMsg: Message = {
             content: content || '[No text content]',
@@ -349,9 +349,9 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
     }
 
     const query = `
-      SELECT 
+      SELECT
         m.ROWID as message_id,
-        CASE 
+        CASE
           WHEN m.text IS NOT NULL AND m.text != '' THEN m.text
           WHEN m.attributedBody IS NOT NULL THEN hex(m.attributedBody)
           ELSE NULL
@@ -362,27 +362,27 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
         m.is_audio_message,
         m.cache_has_attachments,
         m.subject,
-        CASE 
+        CASE
           WHEN m.text IS NOT NULL AND m.text != '' THEN 0
           WHEN m.attributedBody IS NOT NULL THEN 1
           ELSE 2
         END as content_type
-      FROM message m 
-      INNER JOIN handle h ON h.ROWID = m.handle_id 
+      FROM message m
+      INNER JOIN handle h ON h.ROWID = m.handle_id
       WHERE m.is_from_me = 0  -- Only messages from others
         AND m.is_read = 0   -- Only unread messages
         AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
         AND m.is_audio_message = 0  -- Skip audio messages
         AND m.item_type = 0  -- Regular messages only
-      ORDER BY m.date DESC 
+      ORDER BY m.date DESC
       LIMIT ${limit}
     `;
 
     // Execute query with retries
-    const { stdout } = await retryOperation(() => 
+    const { stdout } = await retryOperation(() =>
       execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
     );
-    
+
     if (!stdout.trim()) {
       console.error("No unread messages found");
       return [];
@@ -403,7 +403,7 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
         .map(async msg => {
           let content = msg.content || '';
           let url: string | undefined;
-          
+
           // If it's an attributedBody (content_type = 1), decode it
           if (msg.content_type === 1) {
             const decoded = decodeAttributedBody(content);
@@ -416,18 +416,18 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
               url = urlMatch[1];
             }
           }
-          
+
           // Get attachments if any
           let attachments: string[] = [];
           if (msg.cache_has_attachments) {
             attachments = await getAttachmentPaths(msg.message_id);
           }
-          
+
           // Add subject if present
           if (msg.subject) {
             content = `Subject: ${msg.subject}\n${content}`;
           }
-          
+
           // Format the message object
           const formattedMsg: Message = {
             content: content || '[No text content]',
@@ -466,14 +466,14 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
 async function scheduleMessage(phoneNumber: string, message: string, scheduledTime: Date) {
   // Store the scheduled message details
   const scheduledMessages = new Map();
-  
+
   // Calculate delay in milliseconds
   const delay = scheduledTime.getTime() - Date.now();
-  
+
   if (delay < 0) {
     throw new Error('Cannot schedule message in the past');
   }
-  
+
   // Schedule the message
   const timeoutId = setTimeout(async () => {
     try {
@@ -483,7 +483,7 @@ async function scheduleMessage(phoneNumber: string, message: string, scheduledTi
       console.error('Failed to send scheduled message:', error);
     }
   }, delay);
-  
+
   // Store the scheduled message details for reference
   scheduledMessages.set(timeoutId, {
     phoneNumber,
@@ -491,7 +491,7 @@ async function scheduleMessage(phoneNumber: string, message: string, scheduledTi
     scheduledTime,
     timeoutId
   });
-  
+
   return {
     id: timeoutId,
     scheduledTime,

@@ -67,7 +67,7 @@ async function checkMapsAccess(): Promise<boolean> {
         throw new Error("Cannot access Maps app");
       }
     }) as boolean;
-    
+
     return result;
   } catch (error) {
     console.error(`Cannot access Maps app: ${error instanceof Error ? error.message : String(error)}`);
@@ -96,33 +96,33 @@ async function searchLocations(query: string, limit: number = 5): Promise<Search
     const locations = await run((args: { query: string, limit: number }) => {
       try {
         const Maps = Application("Maps");
-        
+
         // Launch Maps and search (this is needed for search to work properly)
         Maps.activate();
-        
+
         // Execute search using the URL scheme which is more reliable
         Maps.activate();
         const encodedQuery = encodeURIComponent(args.query);
         Maps.openLocation(`maps://?q=${encodedQuery}`);
-        
+
         // For backward compatibility also try the standard search method
         try {
           Maps.search(args.query);
         } catch (e) {
           // Ignore error if search is not supported
         }
-        
+
         // Wait a bit for search results to populate
         delay(2); // 2 seconds
-        
+
         // Try to get search results, if supported by the version of Maps
         const locations: MapLocation[] = [];
-        
+
         try {
           // Different versions of Maps have different ways to access results
           // We'll need to use a different method for each version
-          
-          // Approach 1: Try to get locations directly 
+
+          // Approach 1: Try to get locations directly
           // (this works on some versions of macOS)
           const selectedLocation = Maps.selectedLocation();
           if (selectedLocation) {
@@ -140,7 +140,7 @@ async function searchLocations(query: string, limit: number = 5): Promise<Search
           } else {
             // If no selected location, use the search field value as name
             // and try to get coordinates by doing a UI script
-            
+
             // Use the user entered search term for the result
             const location: MapLocation = {
               id: `loc-${Date.now()}-${Math.random()}`,
@@ -166,18 +166,18 @@ async function searchLocations(query: string, limit: number = 5): Promise<Search
           };
           locations.push(location);
         }
-        
+
         return locations.slice(0, args.limit);
       } catch (e) {
         return []; // Return empty array on any error
       }
     }, { query, limit }) as MapLocation[];
-    
+
     return {
       success: locations.length > 0,
       locations,
-      message: locations.length > 0 ? 
-        `Found ${locations.length} location(s) for "${query}"` : 
+      message: locations.length > 0 ?
+        `Found ${locations.length} location(s) for "${query}"` :
         `No locations found for "${query}"`
     };
   } catch (error) {
@@ -209,20 +209,20 @@ async function saveLocation(name: string, address: string): Promise<SaveResult> 
       try {
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // First search for the location to get its details
         Maps.search(args.address);
-        
+
         // Wait for search to complete
         delay(2);
-        
+
         try {
           // Try to add to favorites
           // Different Maps versions have different methods
-          
+
           // Try to get the current location
           const location = Maps.selectedLocation();
-          
+
           if (location) {
             // Now try to add to favorites
             // Approach 1: Direct API if available
@@ -268,7 +268,7 @@ async function saveLocation(name: string, address: string): Promise<SaveResult> 
         };
       }
     }, { name, address }) as SaveResult;
-    
+
     return result;
   } catch (error) {
     return {
@@ -285,8 +285,8 @@ async function saveLocation(name: string, address: string): Promise<SaveResult> 
  * @param transportType Type of transport to use (default is driving)
  */
 async function getDirections(
-  fromAddress: string, 
-  toAddress: string, 
+  fromAddress: string,
+  toAddress: string,
   transportType: 'driving' | 'walking' | 'transit' = 'driving'
 ): Promise<DirectionResult> {
   try {
@@ -299,25 +299,25 @@ async function getDirections(
 
     console.error(`getDirections - Getting directions from "${fromAddress}" to "${toAddress}"`);
 
-    const result = await run((args: { 
-      fromAddress: string, 
-      toAddress: string, 
-      transportType: string 
+    const result = await run((args: {
+      fromAddress: string,
+      toAddress: string,
+      transportType: string
     }) => {
       try {
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // Ask for directions
         Maps.getDirections({
           from: args.fromAddress,
           to: args.toAddress,
           by: args.transportType
         });
-        
+
         // Wait for directions to load
         delay(2);
-        
+
         // There's no direct API to get the route details
         // We'll return basic success and let the Maps UI show the route
         return {
@@ -337,7 +337,7 @@ async function getDirections(
         };
       }
     }, { fromAddress, toAddress, transportType }) as DirectionResult;
-    
+
     return result;
   } catch (error) {
     return {
@@ -367,13 +367,13 @@ async function dropPin(name: string, address: string): Promise<SaveResult> {
       try {
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // First search for the location to get its details
         Maps.search(args.address);
-        
+
         // Wait for search to complete
         delay(2);
-        
+
         // Dropping pins programmatically is challenging in newer Maps versions
         // Most reliable way is to search and then the user can manually drop a pin
         return {
@@ -387,7 +387,7 @@ async function dropPin(name: string, address: string): Promise<SaveResult> {
         };
       }
     }, { name, address }) as SaveResult;
-    
+
     return result;
   } catch (error) {
     return {
@@ -418,17 +418,17 @@ async function listGuides(): Promise<GuideResult> {
       try {
         const app = Application.currentApplication();
         app.includeStandardAdditions = true;
-        
+
         // Open Maps
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // Open the guides view using URL scheme
         app.openLocation("maps://?show=guides");
-        
+
         // Without direct scripting access, we can't get the actual list of guides
         // But we can at least open the guides view for the user
-        
+
         return {
           success: true,
           message: "Opened guides view in Maps",
@@ -441,7 +441,7 @@ async function listGuides(): Promise<GuideResult> {
         };
       }
     }) as GuideResult;
-    
+
     return result;
   } catch (error) {
     return {
@@ -474,18 +474,18 @@ async function addToGuide(locationAddress: string, guideName: string): Promise<A
       try {
         const app = Application.currentApplication();
         app.includeStandardAdditions = true;
-        
+
         // Open Maps
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // Search for the location
         const encodedAddress = encodeURIComponent(args.locationAddress);
         app.openLocation(`maps://?q=${encodedAddress}`);
-        
+
         // We can't directly add to a guide through AppleScript,
         // but we can provide instructions for the user
-        
+
         return {
           success: true,
           message: `Showing "${args.locationAddress}" in Maps. Add to "${args.guideName}" guide by clicking location pin, "..." button, then "Add to Guide".`,
@@ -499,7 +499,7 @@ async function addToGuide(locationAddress: string, guideName: string): Promise<A
         };
       }
     }, { locationAddress, guideName }) as AddToGuideResult;
-    
+
     return result;
   } catch (error) {
     return {
@@ -531,17 +531,17 @@ async function createGuide(guideName: string): Promise<AddToGuideResult> {
       try {
         const app = Application.currentApplication();
         app.includeStandardAdditions = true;
-        
+
         // Open Maps
         const Maps = Application("Maps");
         Maps.activate();
-        
+
         // Open the guides view using URL scheme
         app.openLocation("maps://?show=guides");
-        
+
         // We can't directly create a guide through AppleScript,
         // but we can provide instructions for the user
-        
+
         return {
           success: true,
           message: `Opened guides view to create new guide "${guideName}". Click "+" button and select "New Guide".`,
@@ -554,7 +554,7 @@ async function createGuide(guideName: string): Promise<AddToGuideResult> {
         };
       }
     }, guideName) as AddToGuideResult;
-    
+
     return result;
   } catch (error) {
     return {
