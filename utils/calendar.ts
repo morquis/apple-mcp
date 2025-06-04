@@ -175,12 +175,12 @@ async function searchEvents(
                                 }
                             } catch (e) {
                                 // Skip events we can't process
-                                console.log("searchEvents - Error processing events: ----0----", JSON.stringify(e));
+                                // Logging removed to avoid console usage inside JXA context
                             }
                         }
                     } catch (e) {
                         // Skip calendars we can't access
-                        console.log("searchEvents - Error processing calendars: ----1----", JSON.stringify(e));
+                        // Logging removed to avoid console usage inside JXA context
                     }
                 }
                 
@@ -260,7 +260,7 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
                         
                     } catch (e) {
                         // Skip calendars we can't access
-                        console.log("openEvent - Error processing calendars: ----2----", JSON.stringify(e));
+                        // Logging removed to avoid console usage inside JXA context
                     }
                 }
                 
@@ -281,6 +281,7 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
         
         return result;
     } catch (error) {
+        console.error(`Error opening event: ${error instanceof Error ? error.message : String(error)}`);
         return {
             success: false,
             message: `Error opening event: ${error instanceof Error ? error.message : String(error)}`
@@ -407,15 +408,15 @@ async function getEvents(
                         }
                     } catch (e) {
                         // Skip calendars we can't access
-                        console.log("getEvents - Error processing events: ----0----", JSON.stringify(e));
+                        // Logging removed to avoid console usage inside JXA context
                     }
                 }
                 return events;
             } catch (e) {
-                console.log("getEvents - Error processing events: ----1----", JSON.stringify(e));
+                // Logging removed to avoid console usage inside JXA context
                 return []; // Return empty array on any error
             }
-        }, { 
+        }, {
             limit, 
             fromDate, 
             toDate,
