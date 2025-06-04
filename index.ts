@@ -739,6 +739,45 @@ end tell`;
                 };
               }
 
+              case "move": {
+                const count = await mailModule.moveMessages(
+                  args.account!,
+                  args.mailbox!,
+                  args.messageIds!,
+                  args.targetMailbox!,
+                );
+                return {
+                  content: [{ type: "text", text: `Moved ${count} message(s)` }],
+                  isError: false,
+                };
+              }
+
+              case "delete": {
+                const count = await mailModule.deleteMessages(
+                  args.account!,
+                  args.mailbox!,
+                  args.messageIds!,
+                  args.permanent,
+                );
+                return {
+                  content: [{ type: "text", text: `Deleted ${count} message(s)` }],
+                  isError: false,
+                };
+              }
+
+              case "update": {
+                const count = await mailModule.updateMessageStatus(
+                  args.account!,
+                  args.mailbox!,
+                  args.messageIds!,
+                  args.status!,
+                );
+                return {
+                  content: [{ type: "text", text: `Updated ${count} message(s)` }],
+                  isError: false,
+                };
+              }
+
               default:
                 throw new Error(`Unknown operation: ${args.operation}`);
             }
@@ -1357,9 +1396,14 @@ function isMailArgs(args: unknown): args is {
     | "accountDetails"
     | "mailboxTree"
     | "mailboxProps"
-    | "messages";
+    | "messages"
+    | "move"
+    | "delete"
+    | "update";
   account?: string;
   mailbox?: string;
+  targetMailbox?: string;
+  messageIds?: string[];
   limit?: number;
   unreadOnly?: boolean;
   startDate?: string;
@@ -1370,6 +1414,8 @@ function isMailArgs(args: unknown): args is {
   body?: string;
   cc?: string;
   bcc?: string;
+  permanent?: boolean;
+  status?: { read?: boolean; flagged?: string | false; junk?: boolean };
 } {
   if (typeof args !== "object" || args === null) return false;
   
@@ -1387,6 +1433,10 @@ function isMailArgs(args: unknown): args is {
     body,
     cc,
     bcc,
+    targetMailbox,
+    messageIds,
+    permanent,
+    status,
   } = args as any;
 
   if (!operation || ![
@@ -1400,6 +1450,9 @@ function isMailArgs(args: unknown): args is {
     "mailboxTree",
     "mailboxProps",
     "messages",
+    "move",
+    "delete",
+    "update",
   ].includes(operation)) {
     return false;
   }
@@ -1429,6 +1482,24 @@ function isMailArgs(args: unknown): args is {
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       break;
+    case "move":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (!Array.isArray(messageIds) || messageIds.some(id => typeof id !== "string")) return false;
+      if (!targetMailbox || typeof targetMailbox !== "string") return false;
+      break;
+    case "delete":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (!Array.isArray(messageIds) || messageIds.some(id => typeof id !== "string")) return false;
+      if (permanent !== undefined && typeof permanent !== "boolean") return false;
+      break;
+    case "update":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (!Array.isArray(messageIds) || messageIds.some(id => typeof id !== "string")) return false;
+      if (typeof status !== "object" || status === null) return false;
+      if (status.read !== undefined && typeof status.read !== "boolean") return false;
+      if (status.flagged !== undefined && !(typeof status.flagged === "string" || status.flagged === false)) return false;
+      if (status.junk !== undefined && typeof status.junk !== "boolean") return false;
+      break;
     case "unread":
     case "mailboxes":
     case "accounts":
@@ -1446,7 +1517,16 @@ function isMailArgs(args: unknown): args is {
   if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
-  
+  if (targetMailbox && typeof targetMailbox !== "string") return false;
+  if (messageIds && (!Array.isArray(messageIds) || messageIds.some(id => typeof id !== "string"))) return false;
+  if (permanent !== undefined && typeof permanent !== "boolean") return false;
+  if (status !== undefined) {
+    if (typeof status !== "object" || status === null) return false;
+    if (status.read !== undefined && typeof status.read !== "boolean") return false;
+    if (status.flagged !== undefined && !(typeof status.flagged === "string" || status.flagged === false)) return false;
+    if (status.junk !== undefined && typeof status.junk !== "boolean") return false;
+  }
+
   return true;
 }
 

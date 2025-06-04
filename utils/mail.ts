@@ -927,6 +927,177 @@ async function listMessages(
   }
 }
 
+async function moveMessages(
+  accountName: string,
+  sourceMailbox: string,
+  messageIds: string[],
+  targetMailbox: string,
+): Promise<number> {
+  try {
+    if (!(await checkMailAccess())) {
+      return 0;
+    }
+
+    const moved = (await run(
+      (acct: string, src: string, ids: string[], dest: string) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return 0;
+        const srcBox = acc[0].mailboxes.whose({ name: src })();
+        const dstBox = acc[0].mailboxes.whose({ name: dest })();
+        if (!srcBox || srcBox.length === 0 || !dstBox || dstBox.length === 0) return 0;
+        let count = 0;
+        for (const id of ids) {
+          try {
+            const msg = srcBox[0].messages.whose({ id })();
+            if (msg && msg.length > 0) {
+              msg[0].move({ to: dstBox[0] });
+              count++;
+            }
+          } catch {}
+        }
+        return count;
+      },
+      accountName,
+      sourceMailbox,
+      messageIds,
+      targetMailbox,
+    )) as number;
+
+    return moved;
+  } catch (error) {
+    console.error("Error moving messages:", error);
+    throw new Error(
+      `Error moving messages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function deleteMessages(
+  accountName: string,
+  mailbox: string,
+  messageIds: string[],
+  permanent = false,
+): Promise<number> {
+  try {
+    if (!(await checkMailAccess())) {
+      return 0;
+    }
+
+    const deleted = (await run(
+      (acct: string, boxName: string, ids: string[], perm: boolean) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return 0;
+        const box = acc[0].mailboxes.whose({ name: boxName })();
+        if (!box || box.length === 0) return 0;
+        let trash: any = null;
+        if (!perm) {
+          try { trash = acc[0].mailboxes.whose({ name: "Trash" })(); } catch {}
+        }
+        let count = 0;
+        for (const id of ids) {
+          try {
+            const msg = box[0].messages.whose({ id })();
+            if (msg && msg.length > 0) {
+              if (perm) {
+                msg[0].delete();
+              } else if (trash && trash.length > 0) {
+                msg[0].move({ to: trash[0] });
+              } else {
+                msg[0].delete();
+              }
+              count++;
+            }
+          } catch {}
+        }
+        return count;
+      },
+      accountName,
+      mailbox,
+      messageIds,
+      permanent,
+    )) as number;
+
+    return deleted;
+  } catch (error) {
+    console.error("Error deleting messages:", error);
+    throw new Error(
+      `Error deleting messages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function updateMessageStatus(
+  accountName: string,
+  mailbox: string,
+  messageIds: string[],
+  status: { read?: boolean; flagged?: string | false; junk?: boolean },
+): Promise<number> {
+  try {
+    if (!(await checkMailAccess())) {
+      return 0;
+    }
+
+    const updated = (await run(
+      (
+        acct: string,
+        boxName: string,
+        ids: string[],
+        st: { read?: boolean; flagged?: string | false; junk?: boolean },
+      ) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return 0;
+        const box = acc[0].mailboxes.whose({ name: boxName })();
+        if (!box || box.length === 0) return 0;
+        const colorMap: { [k: string]: number } = {
+          red: 1,
+          orange: 2,
+          yellow: 3,
+          green: 4,
+          blue: 5,
+          purple: 6,
+          gray: 7,
+        };
+        let count = 0;
+        for (const id of ids) {
+          try {
+            const msg = box[0].messages.whose({ id })();
+            if (msg && msg.length > 0) {
+              const m = msg[0];
+              if (st.read !== undefined) m.readStatus = st.read;
+              if (st.flagged !== undefined) {
+                if (st.flagged === false) {
+                  m.flaggedStatus = false;
+                  m.flagIndex = -1;
+                } else {
+                  m.flaggedStatus = true;
+                  m.flagIndex = colorMap[String(st.flagged).toLowerCase()] ?? 0;
+                }
+              }
+              if (st.junk !== undefined) m.junkMailStatus = st.junk;
+              count++;
+            }
+          } catch {}
+        }
+        return count;
+      },
+      accountName,
+      mailbox,
+      messageIds,
+      status,
+    )) as number;
+
+    return updated;
+  } catch (error) {
+    console.error("Error updating message status:", error);
+    throw new Error(
+      `Error updating message status: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export default {
   getUnreadMails,
   searchMails,
@@ -939,4 +1110,7 @@ export default {
   getMailboxProperties,
   getAccountMailboxTree,
   listMessages,
+  moveMessages,
+  deleteMessages,
+  updateMessageStatus,
 };
