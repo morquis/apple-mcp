@@ -64,6 +64,7 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Retrieve detailed account settings
   - Display mailbox hierarchy and properties
   - List messages from a specific mailbox with filters
+  - Manage smart mailboxes (list, create, edit, delete)
 - Reminders:
   - List all reminders and reminder lists
   - Search for reminders by text
@@ -129,6 +130,14 @@ find all the notes related to AI and send it to my girlfriend
 
 ```
 create a reminder to "Buy groceries" for tomorrow at 5pm
+```
+
+``` 
+list smart mailboxes
+```
+
+``` 
+create smart mailbox named "Flagged Today" with criteria {"searchString":"flagged today"}
 ```
 
 ## Local Development

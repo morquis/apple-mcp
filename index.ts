@@ -12,6 +12,11 @@ interface WebSearchArgs {
   query: string;
 }
 
+interface SmartCriteria {
+  searchString: string;
+  mailboxes?: string[];
+}
+
 // Safe mode implementation - lazy loading of modules
 let useEagerLoading = true;
 let loadingTimeout: NodeJS.Timeout | null = null;
@@ -739,6 +744,29 @@ end tell`;
                 };
               }
 
+              case "listSmartMailboxes": {
+                const smarts = await mailModule.listSmartMailboxes();
+                const text = smarts.length > 0 ?
+                  smarts.map(s => `${s.name}: ${s.criteria}`).join("\n") :
+                  "No smart mailboxes found";
+                return { content: [{ type: "text", text }], mailboxes: smarts, isError: false };
+              }
+
+              case "createSmartMailbox": {
+                const result = await mailModule.createSmartMailbox(args.criteria!, args.name!);
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
+              case "editSmartMailbox": {
+                const result = await mailModule.editSmartMailbox(args.id!, args.criteria!);
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
+              case "deleteSmartMailbox": {
+                const result = await mailModule.deleteSmartMailbox(args.id!);
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
               default:
                 throw new Error(`Unknown operation: ${args.operation}`);
             }
@@ -1357,7 +1385,11 @@ function isMailArgs(args: unknown): args is {
     | "accountDetails"
     | "mailboxTree"
     | "mailboxProps"
-    | "messages";
+    | "messages"
+    | "listSmartMailboxes"
+    | "createSmartMailbox"
+    | "editSmartMailbox"
+    | "deleteSmartMailbox";
   account?: string;
   mailbox?: string;
   limit?: number;
@@ -1370,6 +1402,9 @@ function isMailArgs(args: unknown): args is {
   body?: string;
   cc?: string;
   bcc?: string;
+  criteria?: SmartCriteria;
+  id?: string;
+  name?: string;
 } {
   if (typeof args !== "object" || args === null) return false;
   
@@ -1387,6 +1422,9 @@ function isMailArgs(args: unknown): args is {
     body,
     cc,
     bcc,
+    criteria,
+    id,
+    name,
   } = args as any;
 
   if (!operation || ![
@@ -1400,6 +1438,10 @@ function isMailArgs(args: unknown): args is {
     "mailboxTree",
     "mailboxProps",
     "messages",
+    "listSmartMailboxes",
+    "createSmartMailbox",
+    "editSmartMailbox",
+    "deleteSmartMailbox",
   ].includes(operation)) {
     return false;
   }
@@ -1429,6 +1471,20 @@ function isMailArgs(args: unknown): args is {
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       break;
+    case "createSmartMailbox":
+      if (!name || typeof name !== "string" || !criteria || typeof criteria !== "object") return false;
+      if (typeof criteria.searchString !== "string") return false;
+      break;
+    case "editSmartMailbox":
+      if (!id || typeof id !== "string" || !criteria || typeof criteria !== "object") return false;
+      if (typeof criteria.searchString !== "string") return false;
+      break;
+    case "deleteSmartMailbox":
+      if (!id || typeof id !== "string") return false;
+      break;
+    case "listSmartMailboxes":
+      // no required fields
+      break;
     case "unread":
     case "mailboxes":
     case "accounts":
@@ -1446,6 +1502,10 @@ function isMailArgs(args: unknown): args is {
   if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
+  if (criteria && typeof criteria !== "object") return false;
+  if (criteria && typeof criteria.searchString !== "string") return false;
+  if (id && typeof id !== "string") return false;
+  if (name && typeof name !== "string") return false;
   
   return true;
 }

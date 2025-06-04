@@ -91,6 +91,11 @@ interface MailAccountDetails extends MailAccount {
   deliveryAccount: string;
 }
 
+interface SmartCriteria {
+  searchString: string;
+  mailboxes?: string[];
+}
+
 async function getUnreadMails(limit = 10): Promise<EmailMessage[]> {
   try {
     if (!(await checkMailAccess())) {
@@ -927,6 +932,104 @@ async function listMessages(
   }
 }
 
+async function listSmartMailboxes(): Promise<{ name: string; id: string; criteria: string }[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const results = (await run(() => {
+      const Mail = Application("Mail");
+      const smarts = Mail.smartMailboxes ? Mail.smartMailboxes() : [];
+      // biome-ignore lint/suspicious/noExplicitAny: dynamic JXA objects
+      return smarts.map((s: any) => {
+        let id = "";
+        let criteria = "";
+        try { id = String(s.id()); } catch {}
+        try { criteria = s.searchString ? String(s.searchString()) : ""; } catch {}
+        return { name: s.name(), id, criteria };
+      });
+    })) as { name: string; id: string; criteria: string }[];
+
+    return results;
+  } catch (error) {
+    console.error("Error listing smart mailboxes:", error);
+    throw new Error(
+      `Error listing smart mailboxes: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function createSmartMailbox(criteria: SmartCriteria, name: string): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    await run((crit: SmartCriteria, nm: string) => {
+      const Mail = Application("Mail");
+      Mail.smartMailboxes().push(
+        Mail.SmartMailbox().make({
+          properties: { name: nm, searchString: crit.searchString },
+        }),
+      );
+    }, criteria, name);
+
+    return `Created smart mailbox '${name}'`;
+  } catch (error) {
+    console.error("Error creating smart mailbox:", error);
+    throw new Error(
+      `Error creating smart mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function editSmartMailbox(id: string, updates: SmartCriteria): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    await run((sId: string, crit: SmartCriteria) => {
+      const Mail = Application("Mail");
+      const box = Mail.smartMailboxes.whose({ id: sId })();
+      if (box && box.length > 0) {
+        box[0].searchString = crit.searchString;
+      }
+    }, id, updates);
+
+    return `Updated smart mailbox '${id}'`;
+  } catch (error) {
+    console.error("Error editing smart mailbox:", error);
+    throw new Error(
+      `Error editing smart mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function deleteSmartMailbox(id: string): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    await run((sId: string) => {
+      const Mail = Application("Mail");
+      const box = Mail.smartMailboxes.whose({ id: sId })();
+      if (box && box.length > 0) {
+        box[0].delete();
+      }
+    }, id);
+
+    return `Deleted smart mailbox '${id}'`;
+  } catch (error) {
+    console.error("Error deleting smart mailbox:", error);
+    throw new Error(
+      `Error deleting smart mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export default {
   getUnreadMails,
   searchMails,
@@ -939,4 +1042,8 @@ export default {
   getMailboxProperties,
   getAccountMailboxTree,
   listMessages,
+  listSmartMailboxes,
+  createSmartMailbox,
+  editSmartMailbox,
+  deleteSmartMailbox,
 };
