@@ -1,5 +1,7 @@
 import { run } from "@jxa/run";
 import { runAppleScript } from "run-applescript";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 async function checkMailAccess(): Promise<boolean> {
   try {
@@ -927,6 +929,147 @@ async function listMessages(
   }
 }
 
+async function getMessageContent(
+  accountName: string,
+  mailboxName: string,
+  messageId: string,
+): Promise<{ plain: string; html: string } | undefined> {
+  try {
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
+
+    const res = (await run(
+      (acct: string, mbx: string, id: string) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return null;
+        const box = acc[0].mailboxes.whose({ name: mbx })();
+        if (!box || box.length === 0) return null;
+        const msg = box[0].messages.whose({ id })();
+        if (!msg || msg.length === 0) return null;
+        const m = msg[0];
+        return { text: m.content(), source: m.source() };
+      },
+      accountName,
+      mailboxName,
+      messageId,
+    )) as { text: string; source: string } | null;
+
+    if (!res) return undefined;
+    const htmlMatch = res.source?.match(/<html[\s\S]*<\/html>/i);
+    return { plain: res.text || "", html: htmlMatch ? htmlMatch[0] : "" };
+  } catch (error) {
+    console.error("Error getting message content:", error);
+    throw new Error(
+      `Error getting message content: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function getMessageMetadata(
+  accountName: string,
+  mailboxName: string,
+  messageId: string,
+): Promise<{ headers: Record<string, string>; flags: { read: boolean; flagged: boolean } } | undefined> {
+  try {
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
+
+    const res = (await run(
+      (acct: string, mbx: string, id: string) => {
+        const Mail = Application("Mail");
+        const acc = Mail.accounts.whose({ name: acct })();
+        if (!acc || acc.length === 0) return null;
+        const box = acc[0].mailboxes.whose({ name: mbx })();
+        if (!box || box.length === 0) return null;
+        const msg = box[0].messages.whose({ id })();
+        if (!msg || msg.length === 0) return null;
+        const m = msg[0];
+        return {
+          source: m.source(),
+          read: m.readStatus(),
+          flagged: m.flaggedStatus ? m.flaggedStatus() : false,
+        };
+      },
+      accountName,
+      mailboxName,
+      messageId,
+    )) as { source: string; read: boolean; flagged: boolean } | null;
+
+    if (!res) return undefined;
+    const headerText = res.source.split(/\r?\n\r?\n/)[0];
+    const headers: Record<string, string> = {};
+    for (const line of headerText.split(/\r?\n/)) {
+      const idx = line.indexOf(":");
+      if (idx > -1) {
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) headers[key] = value;
+      }
+    }
+    return { headers, flags: { read: res.read, flagged: res.flagged } };
+  } catch (error) {
+    console.error("Error getting message metadata:", error);
+    throw new Error(
+      `Error getting message metadata: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function getMessageAttachments(
+  accountName: string,
+  mailboxName: string,
+  messageId: string,
+  saveDir?: string,
+): Promise<string[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const dir = saveDir || tmpdir();
+    const escapedDir = dir.replace(/"/g, '\\"');
+    const script = `
+set outList to {}
+try
+  set saveFolder to POSIX file "${escapedDir}" as text
+  tell application "Mail"
+    set targetAccount to first account whose name is "${accountName.replace(/"/g, '\\"')}"
+    set targetMailbox to first mailbox of targetAccount whose name is "${mailboxName.replace(/"/g, '\\"')}"
+    set targetMessage to first message of targetMailbox whose id is "${messageId.replace(/"/g, '\\"')}"
+    repeat with att in mail attachments of targetMessage
+      set filePath to saveFolder & (name of att)
+      try
+        save att in filePath
+        set end of outList to POSIX path of filePath
+      on error errMsg
+        set end of outList to errMsg
+      end try
+    end repeat
+  end tell
+on error errm
+  return {"Error: " & errm}
+end try
+return outList`;
+
+    const result = await runAppleScript(script);
+    if (!result) return [];
+    const cleaned = result
+      .replace(/[{}]/g, "")
+      .split(/,\s*/)
+      .map((s) => s.replace(/^"|"$/g, "").trim())
+      .filter(Boolean);
+    return cleaned;
+  } catch (error) {
+    console.error("Error getting message attachments:", error);
+    throw new Error(
+      `Error getting message attachments: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export default {
   getUnreadMails,
   searchMails,
@@ -939,4 +1082,7 @@ export default {
   getMailboxProperties,
   getAccountMailboxTree,
   listMessages,
+  getMessageContent,
+  getMessageMetadata,
+  getMessageAttachments,
 };

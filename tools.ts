@@ -86,7 +86,7 @@ const CONTACTS_TOOL: Tool = {
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', or 'messages'",
+          description: "Operation to perform: 'unread', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', 'messageContent', 'messageMetadata', or 'messageAttachments'",
           enum: [
             "unread",
             "search",
@@ -97,7 +97,10 @@ const CONTACTS_TOOL: Tool = {
             "accountDetails",
             "mailboxTree",
             "mailboxProps",
-            "messages"
+            "messages",
+            "messageContent",
+            "messageMetadata",
+            "messageAttachments"
           ]
         },
         account: {
@@ -147,6 +150,14 @@ const CONTACTS_TOOL: Tool = {
         bcc: {
           type: "string",
           description: "BCC email address (optional for send operation)"
+        },
+        messageId: {
+          type: "string",
+          description: "ID of the message for content, metadata or attachments operations",
+        },
+        saveDir: {
+          type: "string",
+          description: "Directory to save attachments (optional for messageAttachments)",
         }
       },
       required: ["operation"]

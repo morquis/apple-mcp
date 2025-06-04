@@ -739,6 +739,41 @@ end tell`;
                 };
               }
 
+              case "messageContent": {
+                const result = await mailModule.getMessageContent(args.account!, args.mailbox!, args.messageId!);
+                if (!result) {
+                  return { content: [{ type: "text", text: "Message not found" }], isError: true };
+                }
+                return {
+                  content: [{ type: "text", text: result.plain }],
+                  html: result.html,
+                  isError: false
+                };
+              }
+
+              case "messageMetadata": {
+                const meta = await mailModule.getMessageMetadata(args.account!, args.mailbox!, args.messageId!);
+                if (!meta) {
+                  return { content: [{ type: "text", text: "Message not found" }], isError: true };
+                }
+                const headers = Object.entries(meta.headers).map(([k,v]) => `${k}: ${v}`).join("\n");
+                const flags = `Read: ${meta.flags.read} Flagged: ${meta.flags.flagged}`;
+                return {
+                  content: [{ type: "text", text: `${headers}\n${flags}` }],
+                  metadata: meta,
+                  isError: false
+                };
+              }
+
+              case "messageAttachments": {
+                const files = await mailModule.getMessageAttachments(args.account!, args.mailbox!, args.messageId!, args.saveDir);
+                return {
+                  content: [{ type: "text", text: files.length > 0 ? `Saved ${files.length} attachment(s)` : "No attachments found" }],
+                  attachments: files,
+                  isError: false
+                };
+              }
+
               default:
                 throw new Error(`Unknown operation: ${args.operation}`);
             }
@@ -1357,7 +1392,10 @@ function isMailArgs(args: unknown): args is {
     | "accountDetails"
     | "mailboxTree"
     | "mailboxProps"
-    | "messages";
+    | "messages"
+    | "messageContent"
+    | "messageMetadata"
+    | "messageAttachments";
   account?: string;
   mailbox?: string;
   limit?: number;
@@ -1370,6 +1408,8 @@ function isMailArgs(args: unknown): args is {
   body?: string;
   cc?: string;
   bcc?: string;
+  messageId?: string;
+  saveDir?: string;
 } {
   if (typeof args !== "object" || args === null) return false;
   
@@ -1387,6 +1427,8 @@ function isMailArgs(args: unknown): args is {
     body,
     cc,
     bcc,
+    messageId,
+    saveDir,
   } = args as any;
 
   if (!operation || ![
@@ -1400,6 +1442,9 @@ function isMailArgs(args: unknown): args is {
     "mailboxTree",
     "mailboxProps",
     "messages",
+    "messageContent",
+    "messageMetadata",
+    "messageAttachments",
   ].includes(operation)) {
     return false;
   }
@@ -1429,6 +1474,12 @@ function isMailArgs(args: unknown): args is {
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       break;
+    case "messageContent":
+    case "messageMetadata":
+    case "messageAttachments":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string" || !messageId || typeof messageId !== "string") return false;
+      if (operation === "messageAttachments" && saveDir && typeof saveDir !== "string") return false;
+      break;
     case "unread":
     case "mailboxes":
     case "accounts":
@@ -1446,7 +1497,9 @@ function isMailArgs(args: unknown): args is {
   if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
-  
+  if (messageId && typeof messageId !== "string") return false;
+  if (saveDir && typeof saveDir !== "string") return false;
+
   return true;
 }
 

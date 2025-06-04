@@ -64,6 +64,7 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Retrieve detailed account settings
   - Display mailbox hierarchy and properties
   - List messages from a specific mailbox with filters
+  - Fetch message content, metadata, and attachments by message ID
 - Reminders:
   - List all reminders and reminder lists
   - Search for reminders by text
@@ -129,6 +130,14 @@ find all the notes related to AI and send it to my girlfriend
 
 ```
 create a reminder to "Buy groceries" for tomorrow at 5pm
+```
+
+```
+get message content for ID "ABC123" from account "iCloud" mailbox "Inbox"
+```
+
+```
+save attachments from message "XYZ789" in mailbox "Work" to ~/Downloads
 ```
 
 ## Local Development
