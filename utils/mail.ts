@@ -927,6 +927,127 @@ async function listMessages(
   }
 }
 
+async function createMailbox(
+  accountName: string,
+  parentMailbox: string | null,
+  name: string,
+): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    const acc = accountName.replace(/"/g, '\\"');
+    const newName = name.replace(/"/g, '\\"');
+    const parent = parentMailbox ? parentMailbox.replace(/"/g, '\\"') : null;
+    const script = `
+tell application "Mail"
+  set theAccount to first account whose name is "${acc}"
+  if theAccount is missing value then error "Account not found"
+  ${parent ? `set parentBox to first mailbox of theAccount whose name is "${parent}"
+  if parentBox is missing value then error "Parent mailbox not found"` : "set parentBox to theAccount"}
+  make new mailbox with properties {name:"${newName}"} at parentBox
+end tell`;
+    await runAppleScript(script);
+    return `Created mailbox '${name}'`;
+  } catch (error) {
+    console.error("Error creating mailbox:", error);
+    throw new Error(
+      `Error creating mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function deleteMailbox(accountName: string, mailboxName: string): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    const acc = accountName.replace(/"/g, '\\"');
+    const box = mailboxName.replace(/"/g, '\\"');
+    const script = `
+tell application "Mail"
+  set theAccount to first account whose name is "${acc}"
+  if theAccount is missing value then error "Account not found"
+  set targetBox to first mailbox of theAccount whose name is "${box}"
+  if targetBox is missing value then error "Mailbox not found"
+  delete targetBox
+end tell`;
+    await runAppleScript(script);
+    return `Deleted mailbox '${mailboxName}'`;
+  } catch (error) {
+    console.error("Error deleting mailbox:", error);
+    throw new Error(
+      `Error deleting mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function renameMailbox(
+  accountName: string,
+  mailboxName: string,
+  newName: string,
+): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    const acc = accountName.replace(/"/g, '\\"');
+    const box = mailboxName.replace(/"/g, '\\"');
+    const newBoxName = newName.replace(/"/g, '\\"');
+    const script = `
+tell application "Mail"
+  set theAccount to first account whose name is "${acc}"
+  if theAccount is missing value then error "Account not found"
+  set targetBox to first mailbox of theAccount whose name is "${box}"
+  if targetBox is missing value then error "Mailbox not found"
+  set name of targetBox to "${newBoxName}"
+end tell`;
+    await runAppleScript(script);
+    return `Renamed mailbox '${mailboxName}' to '${newName}'`;
+  } catch (error) {
+    console.error("Error renaming mailbox:", error);
+    throw new Error(
+      `Error renaming mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function moveMailbox(
+  accountName: string,
+  mailboxName: string,
+  targetParent: string,
+): Promise<string> {
+  try {
+    if (!(await checkMailAccess())) {
+      return "";
+    }
+
+    const acc = accountName.replace(/"/g, '\\"');
+    const box = mailboxName.replace(/"/g, '\\"');
+    const parent = targetParent.replace(/"/g, '\\"');
+    const script = `
+tell application "Mail"
+  set theAccount to first account whose name is "${acc}"
+  if theAccount is missing value then error "Account not found"
+  set moveBox to first mailbox of theAccount whose name is "${box}"
+  if moveBox is missing value then error "Mailbox not found"
+  ${parent === "" ? "set destBox to theAccount" : `set destBox to first mailbox of theAccount whose name is "${parent}"
+  if destBox is missing value then error "Target mailbox not found"`}
+  move moveBox to destBox
+end tell`;
+    await runAppleScript(script);
+    return `Moved mailbox '${mailboxName}' to '${targetParent}'`;
+  } catch (error) {
+    console.error("Error moving mailbox:", error);
+    throw new Error(
+      `Error moving mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export default {
   getUnreadMails,
   searchMails,
@@ -939,4 +1060,8 @@ export default {
   getMailboxProperties,
   getAccountMailboxTree,
   listMessages,
+  createMailbox,
+  deleteMailbox,
+  renameMailbox,
+  moveMailbox,
 };
