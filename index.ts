@@ -739,6 +739,38 @@ end tell`;
                 };
               }
 
+              case "createMailbox": {
+                const result = await mailModule.createMailbox(
+                  args.account!,
+                  args.parentMailbox ?? null,
+                  args.name!,
+                );
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
+              case "deleteMailbox": {
+                const result = await mailModule.deleteMailbox(args.account!, args.mailbox!);
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
+              case "renameMailbox": {
+                const result = await mailModule.renameMailbox(
+                  args.account!,
+                  args.mailbox!,
+                  args.newName!,
+                );
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
+              case "moveMailbox": {
+                const result = await mailModule.moveMailbox(
+                  args.account!,
+                  args.mailbox!,
+                  args.targetParent!,
+                );
+                return { content: [{ type: "text", text: result }], isError: false };
+              }
+
               default:
                 throw new Error(`Unknown operation: ${args.operation}`);
             }
@@ -1357,9 +1389,17 @@ function isMailArgs(args: unknown): args is {
     | "accountDetails"
     | "mailboxTree"
     | "mailboxProps"
-    | "messages";
+    | "messages"
+    | "createMailbox"
+    | "deleteMailbox"
+    | "renameMailbox"
+    | "moveMailbox";
   account?: string;
   mailbox?: string;
+  parentMailbox?: string;
+  name?: string;
+  newName?: string;
+  targetParent?: string;
   limit?: number;
   unreadOnly?: boolean;
   startDate?: string;
@@ -1400,6 +1440,10 @@ function isMailArgs(args: unknown): args is {
     "mailboxTree",
     "mailboxProps",
     "messages",
+    "createMailbox",
+    "deleteMailbox",
+    "renameMailbox",
+    "moveMailbox",
   ].includes(operation)) {
     return false;
   }
@@ -1429,6 +1473,19 @@ function isMailArgs(args: unknown): args is {
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       break;
+    case "createMailbox":
+      if (!account || typeof account !== "string" || !name || typeof name !== "string") return false;
+      if (parentMailbox && typeof parentMailbox !== "string") return false;
+      break;
+    case "deleteMailbox":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      break;
+    case "renameMailbox":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string" || !newName || typeof newName !== "string") return false;
+      break;
+    case "moveMailbox":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string" || !targetParent || typeof targetParent !== "string") return false;
+      break;
     case "unread":
     case "mailboxes":
     case "accounts":
@@ -1446,6 +1503,10 @@ function isMailArgs(args: unknown): args is {
   if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
+  if (parentMailbox && typeof parentMailbox !== "string") return false;
+  if (name && typeof name !== "string") return false;
+  if (newName && typeof newName !== "string") return false;
+  if (targetParent && typeof targetParent !== "string") return false;
   
   return true;
 }
