@@ -23,11 +23,16 @@
     "apple-mcp": "./index.ts"
   },
   "scripts": {
-    "dev": "bun run index.ts"
+    "dev": "bun run index.ts",
+    "lint": "bun x eslint . --ext .ts",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/node": "^22.13.4"
+    "@types/node": "^22.13.4",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/parser": "^7.0.1",
+    "@typescript-eslint/eslint-plugin": "^7.0.1"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
