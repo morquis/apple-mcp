@@ -1421,11 +1421,15 @@ function isMailArgs(args: unknown): args is {
   includeHeaders?: boolean;
 } {
   if (typeof args !== "object" || args === null) return false;
-  
+
   const {
     operation,
     account,
     mailbox,
+    parentMailbox,
+    name,
+    newName,
+    targetParent,
     limit,
     unreadOnly,
     startDate,
