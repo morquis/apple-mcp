@@ -65,8 +65,7 @@ This document outlines the steps required to implement mailbox reading functions
    - Reuse existing parsing logic from `getUnreadMails`/`searchMails` but scoped to specified mailbox.
 
 ## 4. Future Steps
-- Implement write operations (create, delete, move mailboxes) after read features are stable.
-- Extend message reading to include attachments and full header retrieval.
+- None. Write operations and detailed message retrieval are now implemented.
 
 ## 5. Status
 
@@ -78,6 +77,7 @@ Key implementations can be found at:
 - `getMailboxProperties` – mailbox metadata helper【F:utils/mail.ts†L769-L817】
 - `getAccountMailboxTree` – recursive mailbox listing【F:utils/mail.ts†L824-L879】
 - `listMessages` – list messages within a mailbox【F:utils/mail.ts†L880-L938】
+- `listMessages` now supports attachments and header retrieval【F:utils/mail.ts†L880-L938】
 
-With these functions available through the `mail` tool (see `index.ts` around line 620), the Apple Map integration can already read accounts, mailbox structures and messages. Future work can focus on advanced analysis and write operations.
+With these functions available through the `mail` tool (see `index.ts` around line 620), the Apple Map integration can read accounts, mailbox structures and messages. Write operations and detailed message retrieval (attachments and headers) have been added for more advanced workflows.
 

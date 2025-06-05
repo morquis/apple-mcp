@@ -725,7 +725,14 @@ end tell`;
               }
 
               case "messages": {
-                const opts = { limit: args.limit, unreadOnly: args.unreadOnly, startDate: args.startDate, endDate: args.endDate };
+                const opts = {
+                  limit: args.limit,
+                  unreadOnly: args.unreadOnly,
+                  startDate: args.startDate,
+                  endDate: args.endDate,
+                  includeAttachments: args.includeAttachments,
+                  includeHeaders: args.includeHeaders,
+                };
                 const messages = await mailModule.listMessages(args.account!, args.mailbox!, opts);
                 return {
                   content: [{
@@ -1410,6 +1417,8 @@ function isMailArgs(args: unknown): args is {
   body?: string;
   cc?: string;
   bcc?: string;
+  includeAttachments?: boolean;
+  includeHeaders?: boolean;
 } {
   if (typeof args !== "object" || args === null) return false;
   
@@ -1427,6 +1436,8 @@ function isMailArgs(args: unknown): args is {
     body,
     cc,
     bcc,
+    includeAttachments,
+    includeHeaders,
   } = args as any;
 
   if (!operation || ![
@@ -1503,6 +1514,8 @@ function isMailArgs(args: unknown): args is {
   if (endDate && typeof endDate !== "string") return false;
   if (cc && typeof cc !== "string") return false;
   if (bcc && typeof bcc !== "string") return false;
+  if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
+  if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;
   if (newName && typeof newName !== "string") return false;

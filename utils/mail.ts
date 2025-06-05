@@ -56,6 +56,14 @@ end tell`);
   }
 }
 
+interface MailAttachment {
+  name: string;
+  mimeType: string;
+  fileSize: number;
+  downloaded: boolean;
+  id: string;
+}
+
 interface EmailMessage {
   subject: string;
   sender: string;
@@ -63,6 +71,8 @@ interface EmailMessage {
   content: string;
   isRead: boolean;
   mailbox: string;
+  attachments?: MailAttachment[];
+  headers?: string;
 }
 
 interface MailAccount {
@@ -869,7 +879,14 @@ async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]
 async function listMessages(
   accountName: string,
   mailboxName: string,
-  opts?: { limit?: number; unreadOnly?: boolean; startDate?: string; endDate?: string },
+  opts?: {
+    limit?: number;
+    unreadOnly?: boolean;
+    startDate?: string;
+    endDate?: string;
+    includeAttachments?: boolean;
+    includeHeaders?: boolean;
+  },
 ): Promise<EmailMessage[]> {
   try {
   if (!(await checkMailAccess())) {
@@ -901,15 +918,40 @@ async function listMessages(
   const result: EmailMessage[] = [];
   const count = Math.min(msgs.length, limit);
   for (let i = 0; i < count; i++) {
-  const m = msgs[i];
-  result.push({
-  subject: m.subject(),
-  sender: m.sender(),
-  dateSent: m.dateSent().toString(),
-  content: m.content ? (m.content() as string).substring(0, 500) : "[No content]",
-  isRead: m.readStatus(),
-  mailbox: mbx,
-  });
+    const m = msgs[i];
+    const msg: EmailMessage = {
+      subject: m.subject(),
+      sender: m.sender(),
+      dateSent: m.dateSent().toString(),
+      content: m.content ? (m.content() as string).substring(0, 500) : "[No content]",
+      isRead: m.readStatus(),
+      mailbox: mbx,
+    };
+
+    if (options && options.includeAttachments) {
+      try {
+        const atts = m.mailAttachments();
+        const attachments = [] as MailAttachment[];
+        for (const a of atts) {
+          attachments.push({
+            name: a.name(),
+            mimeType: a.mimeType ? String(a.mimeType()) : "",
+            fileSize: a.fileSize ? a.fileSize() : 0,
+            downloaded: a.downloaded ? a.downloaded() : false,
+            id: a.id ? String(a.id()) : "",
+          });
+        }
+        msg.attachments = attachments;
+      } catch {}
+    }
+
+    if (options && options.includeHeaders) {
+      try {
+        msg.headers = m.allHeaders ? String(m.allHeaders()) : String(m.source());
+      } catch {}
+    }
+
+    result.push(msg);
   }
   return result;
   },
