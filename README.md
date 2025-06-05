@@ -65,6 +65,7 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Retrieve detailed account settings
   - Display mailbox hierarchy and properties
   - List messages from a specific mailbox with filters
+  - Retrieve attachments and full message headers when listing messages
   - Create, delete, rename and move mailboxes
 - Reminders:
   - List all reminders and reminder lists
