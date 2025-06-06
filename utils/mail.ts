@@ -1,6 +1,22 @@
 import { run } from "@jxa/run";
 import { runAppleScript } from "run-applescript";
 
+// Helper function to extract Message-ID from headers and create clickable link
+function createMessageLink(headers: string | undefined, subject: string): string | undefined {
+  if (!headers) return undefined;
+  
+  // Look for Message-ID in headers (case-insensitive, multiline)
+  const messageIdMatch = headers.match(/Message-I[Dd]:\s*<([^>]+)>/mi);
+  if (!messageIdMatch || !messageIdMatch[1]) return undefined;
+  
+  const messageId = messageIdMatch[1];
+  // URL encode the Message-ID, keeping the angle brackets
+  const encodedMessageId = encodeURIComponent(`<${messageId}>`);
+  
+  // Create markdown link in the format [Subject](message:%3CMessage-ID%3E)
+  return `[${subject}](message:${encodedMessageId})`;
+}
+
 async function checkMailAccess(): Promise<boolean> {
   try {
   // First check if Mail is running
@@ -73,6 +89,7 @@ interface EmailMessage {
   mailbox: string;
   attachments?: MailAttachment[];
   headers?: string;
+  messageLink?: string;
 }
 
 interface MailAccount {
@@ -959,6 +976,15 @@ async function listMessages(
   mailboxName,
   opts ?? {},
   )) as EmailMessage[];
+
+  // Generate message links for messages with headers
+  if (opts?.includeHeaders) {
+    messages.forEach(msg => {
+      if (msg.headers) {
+        msg.messageLink = createMessageLink(msg.headers, msg.subject);
+      }
+    });
+  }
 
   return messages;
   } catch (error) {

@@ -734,12 +734,52 @@ end tell`;
                   includeHeaders: args.includeHeaders,
                 };
                 const messages = await mailModule.listMessages(args.account!, args.mailbox!, opts);
+                
+                let textContent = "";
+                if (messages.length > 0) {
+                  if (args.includeHeaders || args.includeAttachments) {
+                    // Detailed format when headers or attachments are requested
+                    textContent = messages.map((m, index) => {
+                      let msgText = `=== Message ${index + 1} ===\n`;
+                      msgText += `From: ${m.sender}\n`;
+                      msgText += `Date: ${m.dateSent}\n`;
+                      msgText += `Subject: ${m.subject}\n`;
+                      msgText += `Read: ${m.isRead ? 'Yes' : 'No'}\n`;
+                      msgText += `Mailbox: ${m.mailbox}\n`;
+                      
+                      if (m.messageLink) {
+                        msgText += `Link: ${m.messageLink}\n`;
+                      }
+                      
+                      if (m.content) {
+                        msgText += `\nContent:\n${m.content}\n`;
+                      }
+                      
+                      if (args.includeAttachments && m.attachments && m.attachments.length > 0) {
+                        msgText += `\nAttachments (${m.attachments.length}):\n`;
+                        m.attachments.forEach(att => {
+                          msgText += `  - ${att.name} (${att.mimeType}, ${att.fileSize} bytes)\n`;
+                        });
+                      }
+                      
+                      if (args.includeHeaders && m.headers) {
+                        msgText += `\nHeaders:\n${m.headers}\n`;
+                      }
+                      
+                      return msgText;
+                    }).join("\n\n");
+                  } else {
+                    // Simple format for regular listing
+                    textContent = messages.map(m => `[${m.dateSent}] ${m.sender}: ${m.subject}`).join("\n");
+                  }
+                } else {
+                  textContent = "No messages found";
+                }
+                
                 return {
                   content: [{
                     type: "text",
-                    text: messages.length > 0 ?
-                      messages.map(m => `[${m.dateSent}] ${m.sender}: ${m.subject}`).join("\n") :
-                      "No messages found"
+                    text: textContent
                   }],
                   messages,
                   isError: false
