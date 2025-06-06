@@ -80,7 +80,7 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails",
+    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E)",
     inputSchema: {
       type: "object",
       properties: {
