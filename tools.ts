@@ -147,6 +147,14 @@ const CONTACTS_TOOL: Tool = {
         bcc: {
           type: "string",
           description: "BCC email address (optional for send operation)"
+        },
+        includeAttachments: {
+          type: "boolean",
+          description: "Include attachment information in the response (optional for messages operation)"
+        },
+        includeHeaders: {
+          type: "boolean",
+          description: "Include full email headers in the response (optional for messages operation, useful for extracting message IDs)"
         }
       },
       required: ["operation"]
