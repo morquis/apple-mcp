@@ -26,36 +26,50 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = MAX_RETR
   }
 }
 
+function isEmailOrServiceId(identifier: string): boolean {
+  return identifier.includes('@') || /^[a-zA-Z]/.test(identifier);
+}
+
 function normalizePhoneNumber(phone: string): string[] {
+  // Email addresses and service IDs (e.g. "o2Business") are valid handle IDs — pass through as-is
+  if (isEmailOrServiceId(phone)) {
+    return [phone];
+  }
+
   // Remove all non-numeric characters except +
   const cleaned = phone.replace(/[^0-9+]/g, '');
-  
-  // If it's already in the correct format (+1XXXXXXXXXX), return just that
-  if (/^\+1\d{10}$/.test(cleaned)) {
-  return [cleaned];
-  }
-  
-  // If it starts with 1 and has 11 digits total
-  if (/^1\d{10}$/.test(cleaned)) {
-  return [`+${cleaned}`];
-  }
-  
-  // If it's 10 digits
-  if (/^\d{10}$/.test(cleaned)) {
-  return [`+1${cleaned}`];
-  }
-  
-  // If none of the above match, try multiple formats
+
+  if (!cleaned) return [];
+
   const formats = new Set<string>();
-  
-  if (cleaned.startsWith('+1')) {
-  formats.add(cleaned);
-  } else if (cleaned.startsWith('1')) {
-  formats.add(`+${cleaned}`);
-  } else {
-  formats.add(`+1${cleaned}`);
+
+  // Already in E.164 international format (+49..., +1..., +212...) — use as-is
+  if (cleaned.startsWith('+')) {
+    formats.add(cleaned);
+    return Array.from(formats);
   }
-  
+
+  // German local format: 0163... → +49163...
+  if (cleaned.startsWith('0')) {
+    formats.add(`+49${cleaned.slice(1)}`);
+    // Also keep with + in case handle stored differently
+    formats.add(`+${cleaned}`);
+    return Array.from(formats);
+  }
+
+  // US 10-digit: 2125551234 → +12125551234
+  if (cleaned.length === 10) {
+    formats.add(`+1${cleaned}`);
+  }
+
+  // US 11-digit starting with 1: 12125551234 → +12125551234
+  if (cleaned.length === 11 && cleaned.startsWith('1')) {
+    formats.add(`+${cleaned}`);
+  }
+
+  // Generic fallback: try with + prefix
+  formats.add(`+${cleaned}`);
+
   return Array.from(formats);
 }
 
@@ -233,6 +247,57 @@ async function getAttachmentPaths(messageId: number): Promise<string[]> {
   }
 }
 
+async function resolveHandleIds(identifier: string): Promise<string[]> {
+  const dbPath = `${process.env.HOME}/Library/Messages/chat.db`;
+
+  // Step 1: Try normalized formats as exact matches
+  const candidates = normalizePhoneNumber(identifier);
+  if (candidates.length > 0) {
+    const inClause = candidates.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
+    try {
+      const { stdout } = await execAsync(
+        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE id IN (${inClause})"`,
+      );
+      if (stdout.trim()) {
+        const rows = JSON.parse(stdout) as { id: string }[];
+        if (rows.length > 0) return rows.map(r => r.id);
+      }
+    } catch (_) {}
+  }
+
+  // Step 2: Fallback — digits-only substring match in handle table
+  // Extract just the digits from the input for a LIKE query
+  const digits = identifier.replace(/[^0-9]/g, '');
+  if (digits.length >= 6) {
+    const escaped = digits.replace(/'/g, "''");
+    try {
+      const { stdout } = await execAsync(
+        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE REPLACE(REPLACE(REPLACE(REPLACE(id, ' ', ''), '-', ''), '(', ''), ')', '') LIKE '%${escaped}%'"`,
+      );
+      if (stdout.trim()) {
+        const rows = JSON.parse(stdout) as { id: string }[];
+        if (rows.length > 0) return rows.map(r => r.id);
+      }
+    } catch (_) {}
+  }
+
+  // Step 3: For email/service IDs, try case-insensitive LIKE
+  if (isEmailOrServiceId(identifier)) {
+    const escaped = identifier.replace(/'/g, "''");
+    try {
+      const { stdout } = await execAsync(
+        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE id LIKE '${escaped}'"`,
+      );
+      if (stdout.trim()) {
+        const rows = JSON.parse(stdout) as { id: string }[];
+        if (rows.length > 0) return rows.map(r => r.id);
+      }
+    } catch (_) {}
+  }
+
+  return [];
+}
+
 async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]> {
   try {
   // Check database access with retries
@@ -241,17 +306,21 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
   return [];
   }
 
-  // Get all possible formats of the phone number
-  const phoneFormats = normalizePhoneNumber(phoneNumber);
-  console.error("Trying phone formats:", phoneFormats);
-  
-  // Create SQL IN clause with all phone number formats
-  const phoneList = phoneFormats.map(p => `'${p.replace(/'/g, "''")}'`).join(',');
-  
+  // Resolve the identifier to matching handle IDs in the DB
+  const handleIds = await resolveHandleIds(phoneNumber);
+  console.error("Resolved handle IDs:", handleIds);
+
+  if (handleIds.length === 0) {
+    console.error("No matching handles found in database for:", phoneNumber);
+    return [];
+  }
+
+  const handleList = handleIds.map(h => `'${h.replace(/'/g, "''")}'`).join(',');
+
   const query = `
-  SELECT 
+  SELECT
   m.ROWID as message_id,
-  CASE 
+  CASE
   WHEN m.text IS NOT NULL AND m.text != '' THEN m.text
   WHEN m.attributedBody IS NOT NULL THEN hex(m.attributedBody)
   ELSE NULL
@@ -262,19 +331,19 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
   m.is_audio_message,
   m.cache_has_attachments,
   m.subject,
-  CASE 
+  CASE
   WHEN m.text IS NOT NULL AND m.text != '' THEN 0
   WHEN m.attributedBody IS NOT NULL THEN 1
   ELSE 2
   END as content_type
-  FROM message m 
-  INNER JOIN handle h ON h.ROWID = m.handle_id 
-  WHERE h.id IN (${phoneList})
+  FROM message m
+  INNER JOIN handle h ON h.ROWID = m.handle_id
+  WHERE h.id IN (${handleList})
   AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
   AND m.is_from_me IS NOT NULL  -- Ensure it's a real message
   AND m.item_type = 0  -- Regular messages only
   AND m.is_audio_message = 0  -- Skip audio messages
-  ORDER BY m.date DESC 
+  ORDER BY m.date DESC
   LIMIT ${limit}
   `;
 
