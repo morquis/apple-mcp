@@ -1,4 +1,9 @@
-import { run } from '@jxa/run';
+import {
+  executeJXA,
+  JXAAppNotRunningError,
+  JXAExecutionError,
+  wrapJXAFunction,
+} from "../core/jxa-bridge.ts";
 
 // Type definitions
 interface MapLocation {
@@ -33,10 +38,10 @@ interface DirectionResult {
   success: boolean;
   message: string;
   route?: {
-  distance: string;
-  duration: string;
-  startAddress: string;
-  endAddress: string;
+    distance: string;
+    duration: string;
+    startAddress: string;
+    endAddress: string;
   };
 }
 
@@ -53,25 +58,30 @@ interface AddToGuideResult {
   locationName?: string;
 }
 
+function escapeJXAString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
+
 /**
  * Check if Maps app is accessible
  */
 async function checkMapsAccess(): Promise<boolean> {
   try {
-  const result = await run(() => {
-  try {
-  const Maps = Application("Maps");
-  Maps.name(); // Just try to get the name to test access
-  return true;
-  } catch (e) {
-  throw new Error("Cannot access Maps app");
-  }
-  }) as boolean;
-  
-  return result;
-  } catch (error) {
-  console.error(`Cannot access Maps app: ${error instanceof Error ? error.message : String(error)}`);
-  return false;
+    const script = wrapJXAFunction(`
+      const Maps = Application("Maps");
+      Maps.name();
+      return JSON.stringify(true);
+    `);
+
+    const hasAccess = await executeJXA<boolean>(script);
+    return hasAccess === true;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -82,110 +92,101 @@ async function checkMapsAccess(): Promise<boolean> {
  */
 async function searchLocations(query: string, limit: number = 5): Promise<SearchResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  locations: [],
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        locations: [],
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`searchLocations - Searching for: "${query}"`);
+    const escapedQuery = escapeJXAString(query);
+    const normalizedLimit = Math.max(0, Math.trunc(limit));
+    const script = wrapJXAFunction(`
+      const Maps = Application("Maps");
+      const query = "${escapedQuery}";
+      const limit = ${normalizedLimit};
 
-  // First try to use the Maps search function
-  const locations = await run((args: { query: string, limit: number }) => {
-  try {
-  const Maps = Application("Maps");
-  
-  // Launch Maps and search (this is needed for search to work properly)
-  Maps.activate();
-  
-  // Execute search using the URL scheme which is more reliable
-  Maps.activate();
-  const encodedQuery = encodeURIComponent(args.query);
-  Maps.openLocation(`maps://?q=${encodedQuery}`);
-  
-  // For backward compatibility also try the standard search method
-  try {
-  Maps.search(args.query);
-  } catch (e) {
-  // Ignore error if search is not supported
-  }
-  
-  // Wait a bit for search results to populate
-  delay(2); // 2 seconds
-  
-  // Try to get search results, if supported by the version of Maps
-  const locations: MapLocation[] = [];
-  
-  try {
-  // Different versions of Maps have different ways to access results
-  // We'll need to use a different method for each version
-  
-  // Approach 1: Try to get locations directly 
-  // (this works on some versions of macOS)
-  const selectedLocation = Maps.selectedLocation();
-  if (selectedLocation) {
-  // If we have a selected location, use it
-  const location: MapLocation = {
-  id: `loc-${Date.now()}-${Math.random()}`,
-  name: selectedLocation.name() || args.query,
-  address: selectedLocation.formattedAddress() || "Address not available",
-  latitude: selectedLocation.latitude(),
-  longitude: selectedLocation.longitude(),
-  category: selectedLocation.category ? selectedLocation.category() : null,
-  isFavorite: false
-  };
-  locations.push(location);
-  } else {
-  // If no selected location, use the search field value as name
-  // and try to get coordinates by doing a UI script
-  
-  // Use the user entered search term for the result
-  const location: MapLocation = {
-  id: `loc-${Date.now()}-${Math.random()}`,
-  name: args.query,
-  address: "Search results - address details not available",
-  latitude: null,
-  longitude: null,
-  category: null,
-  isFavorite: false
-  };
-  locations.push(location);
-  }
-  } catch (e) {
-  // If the above didn't work, at least return something based on the query
-  const location: MapLocation = {
-  id: `loc-${Date.now()}-${Math.random()}`,
-  name: args.query,
-  address: "Search result - address details not available",
-  latitude: null,
-  longitude: null,
-  category: null,
-  isFavorite: false
-  };
-  locations.push(location);
-  }
-  
-  return locations.slice(0, args.limit);
-  } catch (e) {
-  return []; // Return empty array on any error
-  }
-  }, { query, limit }) as MapLocation[];
-  
-  return {
-  success: locations.length > 0,
-  locations,
-  message: locations.length > 0 ? 
-  `Found ${locations.length} location(s) for "${query}"` : 
-  `No locations found for "${query}"`
-  };
+      Maps.activate();
+
+      const encodedQuery = encodeURIComponent(query);
+      Maps.openLocation("maps://?q=" + encodedQuery);
+
+      try {
+        Maps.search(query);
+      } catch (_) {
+        // Ignore search API availability issues on older Maps builds.
+      }
+
+      delay(2);
+
+      const locations = [];
+
+      try {
+        const selectedLocation = Maps.selectedLocation();
+
+        if (selectedLocation) {
+          locations.push({
+            id: "loc-" + Date.now() + "-" + Math.random(),
+            name: selectedLocation.name() || query,
+            address: selectedLocation.formattedAddress() || "Address not available",
+            latitude: selectedLocation.latitude(),
+            longitude: selectedLocation.longitude(),
+            category: selectedLocation.category ? selectedLocation.category() : null,
+            isFavorite: false,
+          });
+        } else {
+          locations.push({
+            id: "loc-" + Date.now() + "-" + Math.random(),
+            name: query,
+            address: "Search results - address details not available",
+            latitude: null,
+            longitude: null,
+            category: null,
+            isFavorite: false,
+          });
+        }
+      } catch (_) {
+        locations.push({
+          id: "loc-" + Date.now() + "-" + Math.random(),
+          name: query,
+          address: "Search result - address details not available",
+          latitude: null,
+          longitude: null,
+          category: null,
+          isFavorite: false,
+        });
+      }
+
+      return JSON.stringify(locations.slice(0, limit));
+    `);
+
+    const locations = await executeJXA<MapLocation[]>(script);
+    const resolvedLocations = Array.isArray(locations) ? locations : [];
+
+    return {
+      success: resolvedLocations.length > 0,
+      locations: resolvedLocations,
+      message:
+        resolvedLocations.length > 0
+          ? `Found ${resolvedLocations.length} location(s) for "${query}"`
+          : `No locations found for "${query}"`,
+    };
   } catch (error) {
-  return {
-  success: false,
-  locations: [],
-  message: `Error searching locations: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return {
+        success: false,
+        locations: [],
+        message: `Error: ${error.message}`,
+      };
+    }
+
+    return {
+      success: false,
+      locations: [],
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -196,85 +197,73 @@ async function searchLocations(query: string, limit: number = 5): Promise<Search
  */
 async function saveLocation(name: string, address: string): Promise<SaveResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`saveLocation - Saving location: "${name}" at address "${address}"`);
+    const escapedName = escapeJXAString(name);
+    const escapedAddress = escapeJXAString(address);
+    const script = wrapJXAFunction(`
+      const Maps = Application("Maps");
+      const name = "${escapedName}";
+      const address = "${escapedAddress}";
 
-  const result = await run((args: { name: string, address: string }) => {
-  try {
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // First search for the location to get its details
-  Maps.search(args.address);
-  
-  // Wait for search to complete
-  delay(2);
-  
-  try {
-  // Try to add to favorites
-  // Different Maps versions have different methods
-  
-  // Try to get the current location
-  const location = Maps.selectedLocation();
-  
-  if (location) {
-  // Now try to add to favorites
-  // Approach 1: Direct API if available
-  try {
-  Maps.addToFavorites(location, {withProperties: {name: args.name}});
-  return {
-  success: true,
-  message: `Added "${args.name}" to favorites`,
-  location: {
-  id: `loc-${Date.now()}`,
-  name: args.name,
-  address: location.formattedAddress() || args.address,
-  latitude: location.latitude(),
-  longitude: location.longitude(),
-  category: null,
-  isFavorite: true
-  }
-  };
-  } catch (e) {
-  // If direct API fails, use UI scripting as fallback
-  // UI scripting would require more complex steps that vary by macOS version
-  return {
-  success: false,
-  message: `Location found but unable to automatically add to favorites. Please manually save "${args.name}" from the Maps app.`
-  };
-  }
-  } else {
-  return {
-  success: false,
-  message: `Could not find location for "${args.address}"`
-  };
-  }
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error adding to favorites: ${e}`
-  };
-  }
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error in Maps: ${e}`
-  };
-  }
-  }, { name, address }) as SaveResult;
-  
-  return result;
+      Maps.activate();
+      Maps.search(address);
+
+      delay(2);
+
+      const location = Maps.selectedLocation();
+
+      if (!location) {
+        return JSON.stringify({
+          success: false,
+          message: 'Could not find location for "' + address + '"',
+        });
+      }
+
+      try {
+        Maps.addToFavorites(location, { withProperties: { name: name } });
+
+        return JSON.stringify({
+          success: true,
+          message: 'Added "' + name + '" to favorites',
+          location: {
+            id: "loc-" + Date.now(),
+            name,
+            address: location.formattedAddress() || address,
+            latitude: location.latitude(),
+            longitude: location.longitude(),
+            category: null,
+            isFavorite: true,
+          },
+        });
+      } catch (_) {
+        return JSON.stringify({
+          success: false,
+          message:
+            'Location found but unable to automatically add to favorites. Please manually save "' +
+            name +
+            '" from the Maps app.',
+        });
+      }
+    `);
+
+    const result = await executeJXA<SaveResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error saving location: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -285,65 +274,66 @@ async function saveLocation(name: string, address: string): Promise<SaveResult> 
  * @param transportType Type of transport to use (default is driving)
  */
 async function getDirections(
-  fromAddress: string, 
-  toAddress: string, 
-  transportType: 'driving' | 'walking' | 'transit' = 'driving'
+  fromAddress: string,
+  toAddress: string,
+  transportType: "driving" | "walking" | "transit" = "driving",
 ): Promise<DirectionResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`getDirections - Getting directions from "${fromAddress}" to "${toAddress}"`);
+    const escapedFromAddress = escapeJXAString(fromAddress);
+    const escapedToAddress = escapeJXAString(toAddress);
+    const escapedTransportType = escapeJXAString(transportType);
+    const script = wrapJXAFunction(`
+      const Maps = Application("Maps");
+      const fromAddress = "${escapedFromAddress}";
+      const toAddress = "${escapedToAddress}";
+      const transportType = "${escapedTransportType}";
 
-  const result = await run((args: { 
-  fromAddress: string, 
-  toAddress: string, 
-  transportType: string 
-  }) => {
-  try {
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // Ask for directions
-  Maps.getDirections({
-  from: args.fromAddress,
-  to: args.toAddress,
-  by: args.transportType
-  });
-  
-  // Wait for directions to load
-  delay(2);
-  
-  // There's no direct API to get the route details
-  // We'll return basic success and let the Maps UI show the route
-  return {
-  success: true,
-  message: `Displaying directions from "${args.fromAddress}" to "${args.toAddress}" by ${args.transportType}`,
-  route: {
-  distance: "See Maps app for details",
-  duration: "See Maps app for details",
-  startAddress: args.fromAddress,
-  endAddress: args.toAddress
-  }
-  };
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error getting directions: ${e}`
-  };
-  }
-  }, { fromAddress, toAddress, transportType }) as DirectionResult;
-  
-  return result;
+      Maps.activate();
+      Maps.getDirections({
+        from: fromAddress,
+        to: toAddress,
+        by: transportType,
+      });
+
+      delay(2);
+
+      return JSON.stringify({
+        success: true,
+        message:
+          'Displaying directions from "' +
+          fromAddress +
+          '" to "' +
+          toAddress +
+          '" by ' +
+          transportType,
+        route: {
+          distance: "See Maps app for details",
+          duration: "See Maps app for details",
+          startAddress: fromAddress,
+          endAddress: toAddress,
+        },
+      });
+    `);
+
+    const result = await executeJXA<DirectionResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error getting directions: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -354,46 +344,46 @@ async function getDirections(
  */
 async function dropPin(name: string, address: string): Promise<SaveResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`dropPin - Creating pin at: "${address}" with name "${name}"`);
+    const escapedName = escapeJXAString(name);
+    const escapedAddress = escapeJXAString(address);
+    const script = wrapJXAFunction(`
+      const Maps = Application("Maps");
+      const name = "${escapedName}";
+      const address = "${escapedAddress}";
 
-  const result = await run((args: { name: string, address: string }) => {
-  try {
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // First search for the location to get its details
-  Maps.search(args.address);
-  
-  // Wait for search to complete
-  delay(2);
-  
-  // Dropping pins programmatically is challenging in newer Maps versions
-  // Most reliable way is to search and then the user can manually drop a pin
-  return {
-  success: true,
-  message: `Showing "${args.address}" in Maps. You can now manually drop a pin by right-clicking and selecting "Drop Pin".`
-  };
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error dropping pin: ${e}`
-  };
-  }
-  }, { name, address }) as SaveResult;
-  
-  return result;
+      Maps.activate();
+      Maps.search(address);
+
+      delay(2);
+
+      return JSON.stringify({
+        success: true,
+        message:
+          'Showing "' +
+          address +
+          '" in Maps. You can now manually drop a pin by right-clicking and selecting "Drop Pin".',
+      });
+    `);
+
+    const result = await executeJXA<SaveResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error dropping pin: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -403,51 +393,41 @@ async function dropPin(name: string, address: string): Promise<SaveResult> {
  */
 async function listGuides(): Promise<GuideResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error("listGuides - Getting list of guides from Maps");
+    const script = wrapJXAFunction(`
+      const app = Application.currentApplication();
+      app.includeStandardAdditions = true;
 
-  // Try to list guides using AppleScript UI automation
-  // Note: Maps doesn't have a direct API for this, so we're using a URL scheme approach
-  const result = await run(() => {
-  try {
-  const app = Application.currentApplication();
-  app.includeStandardAdditions = true;
-  
-  // Open Maps
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // Open the guides view using URL scheme
-  app.openLocation("maps://?show=guides");
-  
-  // Without direct scripting access, we can't get the actual list of guides
-  // But we can at least open the guides view for the user
-  
-  return {
-  success: true,
-  message: "Opened guides view in Maps",
-  guides: []
-  };
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error accessing guides: ${e}`
-  };
-  }
-  }) as GuideResult;
-  
-  return result;
+      const Maps = Application("Maps");
+      Maps.activate();
+
+      app.openLocation("maps://?show=guides");
+
+      return JSON.stringify({
+        success: true,
+        message: "Opened guides view in Maps",
+        guides: [],
+      });
+    `);
+
+    const result = await executeJXA<GuideResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error listing guides: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -459,53 +439,53 @@ async function listGuides(): Promise<GuideResult> {
  */
 async function addToGuide(locationAddress: string, guideName: string): Promise<AddToGuideResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`addToGuide - Adding location "${locationAddress}" to guide "${guideName}"`);
+    const escapedLocationAddress = escapeJXAString(locationAddress);
+    const escapedGuideName = escapeJXAString(guideName);
+    const script = wrapJXAFunction(`
+      const app = Application.currentApplication();
+      app.includeStandardAdditions = true;
 
-  // Since Maps doesn't provide a direct API for guide management,
-  // we'll use a combination of search and manual instructions
-  const result = await run((args: { locationAddress: string, guideName: string }) => {
-  try {
-  const app = Application.currentApplication();
-  app.includeStandardAdditions = true;
-  
-  // Open Maps
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // Search for the location
-  const encodedAddress = encodeURIComponent(args.locationAddress);
-  app.openLocation(`maps://?q=${encodedAddress}`);
-  
-  // We can't directly add to a guide through AppleScript,
-  // but we can provide instructions for the user
-  
-  return {
-  success: true,
-  message: `Showing "${args.locationAddress}" in Maps. Add to "${args.guideName}" guide by clicking location pin, "..." button, then "Add to Guide".`,
-  guideName: args.guideName,
-  locationName: args.locationAddress
-  };
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error adding to guide: ${e}`
-  };
-  }
-  }, { locationAddress, guideName }) as AddToGuideResult;
-  
-  return result;
+      const Maps = Application("Maps");
+      const locationAddress = "${escapedLocationAddress}";
+      const guideName = "${escapedGuideName}";
+
+      Maps.activate();
+
+      const encodedAddress = encodeURIComponent(locationAddress);
+      app.openLocation("maps://?q=" + encodedAddress);
+
+      return JSON.stringify({
+        success: true,
+        message:
+          'Showing "' +
+          locationAddress +
+          '" in Maps. Add to "' +
+          guideName +
+          '" guide by clicking location pin, "..." button, then "Add to Guide".',
+        guideName,
+        locationName: locationAddress,
+      });
+    `);
+
+    const result = await executeJXA<AddToGuideResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error adding to guide: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -516,51 +496,46 @@ async function addToGuide(locationAddress: string, guideName: string): Promise<A
  */
 async function createGuide(guideName: string): Promise<AddToGuideResult> {
   try {
-  if (!await checkMapsAccess()) {
-  return {
-  success: false,
-  message: "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation."
-  };
-  }
+    if (!(await checkMapsAccess())) {
+      return {
+        success: false,
+        message:
+          "Cannot access Maps app. Please grant access in System Settings > Privacy & Security > Automation.",
+      };
+    }
 
-  console.error(`createGuide - Creating new guide "${guideName}"`);
+    const escapedGuideName = escapeJXAString(guideName);
+    const script = wrapJXAFunction(`
+      const app = Application.currentApplication();
+      app.includeStandardAdditions = true;
 
-  // Since Maps doesn't provide a direct API for guide creation,
-  // we'll guide the user through the process
-  const result = await run((guideName: string) => {
-  try {
-  const app = Application.currentApplication();
-  app.includeStandardAdditions = true;
-  
-  // Open Maps
-  const Maps = Application("Maps");
-  Maps.activate();
-  
-  // Open the guides view using URL scheme
-  app.openLocation("maps://?show=guides");
-  
-  // We can't directly create a guide through AppleScript,
-  // but we can provide instructions for the user
-  
-  return {
-  success: true,
-  message: `Opened guides view to create new guide "${guideName}". Click "+" button and select "New Guide".`,
-  guideName: guideName
-  };
-  } catch (e) {
-  return {
-  success: false,
-  message: `Error creating guide: ${e}`
-  };
-  }
-  }, guideName) as AddToGuideResult;
-  
-  return result;
+      const Maps = Application("Maps");
+      const guideName = "${escapedGuideName}";
+
+      Maps.activate();
+      app.openLocation("maps://?show=guides");
+
+      return JSON.stringify({
+        success: true,
+        message:
+          'Opened guides view to create new guide "' +
+          guideName +
+          '". Click "+" button and select "New Guide".',
+        guideName,
+      });
+    `);
+
+    const result = await executeJXA<AddToGuideResult>(script);
+    return result ?? { success: false, message: "Error: empty response" };
   } catch (error) {
-  return {
-  success: false,
-  message: `Error creating guide: ${error instanceof Error ? error.message : String(error)}`
-  };
+    if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+      return { success: false, message: `Error: ${error.message}` };
+    }
+
+    return {
+      success: false,
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -571,7 +546,9 @@ const maps = {
   dropPin,
   listGuides,
   addToGuide,
-  createGuide
+  createGuide,
 };
+
+export { checkMapsAccess };
 
 export default maps;

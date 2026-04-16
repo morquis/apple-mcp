@@ -21,8 +21,7 @@ type WrappedJXAError = {
 };
 
 const APP_NOT_RUNNING_PATTERNS = [
-  /Can't get application ["']([^"']+)["']/i,
-  /Can’t get application ["']([^"']+)["']/i,
+  /Can’t get application ["’]([^"’]+)["’]/i,
   /Application can't be found/i,
   /Application isn'?t running/i,
   /Applikation .* gefunden/i,
@@ -321,7 +320,10 @@ export const JXAConverters = {
 
   try {
     const candidate = target[${JSON.stringify(propertyName)}];
-    const value = typeof candidate === "function" ? candidate.call(target) : candidate;
+    // In JXA, methods on Application objects must be called directly on the
+    // target (target.prop()) rather than via .call() — the bridge context is
+    // lost when the function reference is detached.
+    const value = typeof candidate === "function" ? target[${JSON.stringify(propertyName)}]() : candidate;
     return value === null || value === undefined ? ${defaultExpression} : value;
   } catch (_) {
     return ${defaultExpression};

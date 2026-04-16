@@ -80,15 +80,16 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E)",
+    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread' and 'messages', always specify 'account' (and ideally 'mailbox') to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', or 'messages'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', or 'messages'",
           enum: [
             "unread",
+            "latest",
             "search",
             "send",
             "mailboxes",
@@ -102,11 +103,11 @@ const CONTACTS_TOOL: Tool = {
         },
         account: {
           type: "string",
-          description: "Email account to use (optional - if not provided, searches across all accounts)"
+          description: "Email account name to use. Strongly recommended — without it, all accounts are scanned which is slow with multiple IMAP/Exchange accounts. Use 'accounts' operation first to discover account names."
         },
         mailbox: {
           type: "string",
-          description: "Mailbox to use (optional - if not provided, uses inbox or searches across all mailboxes)"
+          description: "Mailbox name (e.g. 'INBOX', 'Posteingang'). Without it, only the inbox of each account is checked. Required together with 'account' for the 'messages' operation."
         },
         limit: {
           type: "number",
@@ -154,7 +155,14 @@ const CONTACTS_TOOL: Tool = {
         },
         includeHeaders: {
           type: "boolean",
-          description: "Include full email headers in the response (optional for messages operation, useful for extracting message IDs)"
+          description: "Include email headers in the response (optional for messages operation)"
+        },
+        headerFilter: {
+          type: "array",
+          items: {
+            type: "string"
+          },
+          description: "Specific header names to include (e.g., ['Message-ID', 'In-Reply-To', 'References']). Only used when includeHeaders is true. If not provided, all headers are included."
         }
       },
       required: ["operation"]
@@ -225,7 +233,7 @@ const CONTACTS_TOOL: Tool = {
   
 const CALENDAR_TOOL: Tool = {
   name: "calendar",
-  description: "Search, create, and open calendar events in Apple Calendar app",
+  description: "Search, create, and open calendar events in Apple Calendar app. PERFORMANCE: For 'search' and 'list', always specify 'calendarName' to avoid scanning all calendars — Exchange/IMAP calendars with thousands of events take 30-90s each. Ask the user which calendar to use.",
   inputSchema: {
     type: "object",
     properties: {
@@ -280,7 +288,7 @@ const CALENDAR_TOOL: Tool = {
       },
       calendarName: {
         type: "string",
-        description: "Name of the calendar to create the event in (optional for create operation, uses default calendar if not specified)"
+        description: "Name of the calendar to search/list/create in (optional, searches all calendars if not specified). Recommended for search/list on Exchange calendars to avoid timeouts."
       }
     },
     required: ["operation"]

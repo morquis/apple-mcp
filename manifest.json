@@ -1,0 +1,56 @@
+{
+  "dxt_version": "0.1",
+  "name": "apple-mcp",
+  "version": "1.0.0",
+  "description": "Apple MCP tools for programmatic access to native macOS applications including Messages, Mail, Contacts, Notes, Reminders, Calendar, Maps, Photos, and Music.",
+  "author": "Dhravya Shah",
+  "license": "MIT",
+  "platforms": ["darwin"],
+  "server": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "tools": [
+    {
+      "name": "contacts",
+      "description": "Manage and search contacts on macOS"
+    },
+    {
+      "name": "notes",
+      "description": "Search, list, and create notes in Apple Notes"
+    },
+    {
+      "name": "messages",
+      "description": "Send and read iMessages"
+    },
+    {
+      "name": "mail",
+      "description": "Read, search, send emails, and manage mailboxes in Apple Mail"
+    },
+    {
+      "name": "reminders",
+      "description": "Create, search, and manage reminders"
+    },
+    {
+      "name": "calendar",
+      "description": "Search, create, and manage calendar events"
+    },
+    {
+      "name": "maps",
+      "description": "Search locations, get directions, and manage guides in Apple Maps"
+    },
+    {
+      "name": "photos",
+      "description": "Search and open photos in the Photos app"
+    },
+    {
+      "name": "music",
+      "description": "Search and play songs in Apple Music"
+    },
+    {
+      "name": "webSearch",
+      "description": "Search the web via DuckDuckGo"
+    }
+  ]
+}

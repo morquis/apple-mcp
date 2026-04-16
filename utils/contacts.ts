@@ -1,110 +1,165 @@
-import { run } from '@jxa/run';
-import { runAppleScript } from 'run-applescript';
+import {
+  executeJXA,
+  JXAConverters,
+  wrapJXAFunction,
+} from "../core/jxa-bridge.ts";
+
+function escapeJXAString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
 
 async function checkContactsAccess(): Promise<boolean> {
   try {
-  // Try to get the count of contacts as a simple test
-  await runAppleScript(`
-tell application "Contacts"
-  count every person
-end tell`);
-  return true;
-  } catch (error) {
-  throw new Error("Cannot access Contacts app. Please grant access in System Preferences > Security & Privacy > Privacy > Contacts.");
+    const script = wrapJXAFunction(`
+      const Contacts = Application("Contacts");
+      Contacts.people().length;
+      return JSON.stringify(true);
+    `);
+
+    const hasAccess = await executeJXA<boolean>(script);
+    return hasAccess === true;
+  } catch (_) {
+    throw new Error(
+      "Cannot access Contacts app. Please grant access in System Preferences > Security & Privacy > Privacy > Contacts.",
+    );
   }
 }
 
 async function getAllNumbers() {
   try {
-  if (!await checkContactsAccess()) {
-  return {};
-  }
+    if (!(await checkContactsAccess())) {
+      return {};
+    }
 
-  const nums: { [key: string]: string[] } = await run(() => {
-  const Contacts = Application('Contacts');
-  const people = Contacts.people();
-  const phoneNumbers: { [key: string]: string[] } = {};
+    const script = wrapJXAFunction(`
+      var Contacts = Application("Contacts");
+      var names = Contacts.people.name();
+      var allPhones = Contacts.people.phones.value();
+      var phoneNumbers = {};
 
-  for (const person of people) {
-  try {
-  const name = person.name();
-  const phones = person.phones().map((phone: unknown) => (phone as { value: string }).value);
+      for (var i = 0; i < names.length; i++) {
+        var name = names[i] || "";
+        var phones = allPhones[i];
+        if (!phones || phones.length === 0) continue;
 
-  if (!phoneNumbers[name]) {
-  phoneNumbers[name] = [];
-  }
-  phoneNumbers[name] = [...phoneNumbers[name], ...phones];
+        if (!Object.prototype.hasOwnProperty.call(phoneNumbers, name)) {
+          phoneNumbers[name] = [];
+        }
+
+        for (var j = 0; j < phones.length; j++) {
+          var value = String(phones[j] || "");
+          if (value) {
+            phoneNumbers[name].push(value);
+          }
+        }
+      }
+
+      return JSON.stringify(phoneNumbers);
+    `);
+
+    const nums = await executeJXA<{ [key: string]: string[] }>(script);
+    return nums && typeof nums === "object" ? nums : {};
   } catch (error) {
-  // Skip contacts that can't be processed
-  }
-  }
-
-  return phoneNumbers;
-  });
-
-  return nums;
-  } catch (error) {
-  throw new Error(`Error accessing contacts: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Error accessing contacts: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 async function findNumber(name: string) {
   try {
-  if (!await checkContactsAccess()) {
-  return [];
-  }
+    if (!(await checkContactsAccess())) {
+      return [];
+    }
 
-  const nums: string[] = await run((name: string) => {
-  const Contacts = Application('Contacts');
-  const people = Contacts.people.whose({name: {_contains: name}});
-  const phones = people.length > 0 ? people[0].phones() : [];
-  return phones.map((phone: unknown) => (phone as { value: string }).value);
-  }, name);
+    const escapedName = escapeJXAString(name);
+    const script = wrapJXAFunction(`
+      const Contacts = Application("Contacts");
+      const searchName = "${escapedName}";
 
-  // If no numbers found, run getNumbers() to find the closest match
-  if (nums.length === 0) {
-  const allNumbers = await getAllNumbers();
-  const closestMatch = Object.keys(allNumbers).find(personName => 
-  personName.toLowerCase().includes(name.toLowerCase())
-  );
-  return closestMatch ? allNumbers[closestMatch] : [];
-  }
+      // First try exact .whose() match (fast)
+      var people = Contacts.people.whose({ name: { _contains: searchName } })();
 
-  return nums;
+      // If no match, try case-insensitive partial match via firstName/lastName
+      if (people.length === 0) {
+        people = Contacts.people.whose({
+          _or: [
+            { firstName: { _contains: searchName } },
+            { lastName: { _contains: searchName } },
+          ],
+        })();
+      }
+
+      if (people.length === 0) {
+        return JSON.stringify([]);
+      }
+
+      var phones = people[0].phones();
+      var result = [];
+
+      for (var i = 0; i < phones.length; i++) {
+        var value = ${JXAConverters.toString("phones[i].value()", '""')};
+
+        if (value) {
+          result.push(value);
+        }
+      }
+
+      return JSON.stringify(result);
+    `);
+
+    return await executeJXA<string[]>(script);
   } catch (error) {
-  throw new Error(`Error finding contact: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Error finding contact: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 async function findContactByPhone(phoneNumber: string): Promise<string | null> {
   try {
-  if (!await checkContactsAccess()) {
-  return null;
-  }
+    if (!(await checkContactsAccess())) {
+      return null;
+    }
 
-  // Normalize the phone number for comparison
-  const searchNumber = phoneNumber.replace(/[^0-9+]/g, '');
-  
-  // Get all contacts and their numbers
-  const allContacts = await getAllNumbers();
-  
-  // Look for a match
-  for (const [name, numbers] of Object.entries(allContacts)) {
-  const normalizedNumbers = numbers.map(num => num.replace(/[^0-9+]/g, ''));
-  if (normalizedNumbers.some(num => 
-  num === searchNumber || 
-  num === `+${searchNumber}` || 
-  num === `+1${searchNumber}` ||
-  `+1${num}` === searchNumber
-  )) {
-  return name;
-  }
-  }
+    const normalizedPhoneNumber = phoneNumber.replace(/[^0-9+]/g, "");
+    const escapedPhoneNumber = escapeJXAString(normalizedPhoneNumber);
+    const script = wrapJXAFunction(`
+      var Contacts = Application("Contacts");
+      var searchNumber = "${escapedPhoneNumber}";
+      var names = Contacts.people.name();
+      var allPhones = Contacts.people.phones.value();
 
-  return null;
-  } catch (error) {
-  // Return null instead of throwing to handle gracefully
-  return null;
+      for (var i = 0; i < names.length; i++) {
+        var phones = allPhones[i];
+        if (!phones) continue;
+
+        for (var j = 0; j < phones.length; j++) {
+          var normalizedNumber = String(phones[j]).replace(/[^0-9+]/g, "");
+
+          if (
+            normalizedNumber === searchNumber ||
+            normalizedNumber === "+" + searchNumber ||
+            normalizedNumber === "+1" + searchNumber ||
+            "+1" + normalizedNumber === searchNumber
+          ) {
+            return JSON.stringify(names[i]);
+          }
+        }
+      }
+
+      return JSON.stringify(null);
+    `);
+
+    const result = await executeJXA<string | null>(script);
+    return result ?? null;
+  } catch (_) {
+    return null;
   }
 }
 

@@ -1,5 +1,19 @@
-import { run } from "@jxa/run";
-import { runAppleScript } from "run-applescript";
+import {
+  executeJXA,
+  JXAAppNotRunningError,
+  JXAConverters,
+  JXAExecutionError,
+  wrapJXAFunction,
+} from "../core/jxa-bridge.ts";
+
+function escapeJXAString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
 
 // Helper function to extract Message-ID from headers and create clickable link
 function createMessageLink(headers: string | undefined, subject: string): string | undefined {
@@ -17,59 +31,50 @@ function createMessageLink(headers: string | undefined, subject: string): string
   return `[${subject}](message:${encodedMessageId})`;
 }
 
-async function checkMailAccess(): Promise<boolean> {
-  try {
-  // First check if Mail is running
-  const isRunning = await runAppleScript(`
-tell application "System Events"
-  return application process "Mail" exists
-end tell`);
-
-  if (isRunning !== "true") {
-  console.error("Mail app is not running, attempting to launch...");
-  try {
-  await runAppleScript(`
-tell application "Mail" to activate
-delay 2`);
-  } catch (activateError) {
-  console.error("Error activating Mail app:", activateError);
-  throw new Error(
-  "Could not activate Mail app. Please start it manually.",
-  );
+// Helper function to filter headers based on requested fields
+function filterHeaders(allHeaders: string, requestedHeaders: string[]): string {
+  if (!allHeaders || !requestedHeaders || requestedHeaders.length === 0) {
+    return allHeaders;
   }
+  
+  // Create a case-insensitive lookup set
+  const requestedLower = new Set(requestedHeaders.map(h => h.toLowerCase()));
+  
+  // Split headers into lines
+  const lines = allHeaders.split('\n');
+  const filteredLines: string[] = [];
+  let currentHeader: string | null = null;
+  let currentLines: string[] = [];
+  
+  for (const line of lines) {
+    // Check if this is a new header (starts with non-whitespace)
+    if (line && !line.startsWith(' ') && !line.startsWith('\t')) {
+      // Process the previous header if any
+      if (currentHeader && currentLines.length > 0) {
+        const headerName = currentHeader.split(':')[0].trim().toLowerCase();
+        if (requestedLower.has(headerName)) {
+          filteredLines.push(...currentLines);
+        }
+      }
+      
+      // Start new header
+      currentHeader = line;
+      currentLines = [line];
+    } else if (currentHeader) {
+      // This is a continuation of the current header
+      currentLines.push(line);
+    }
   }
-
-  // Try to get the count of mailboxes as a simple test
-  try {
-  await runAppleScript(`
-tell application "Mail"
-  count every mailbox
-end tell`);
-  return true;
-  } catch (mailboxError) {
-  console.error("Error accessing mailboxes:", mailboxError);
-
-  // Try an alternative check
-  try {
-  const mailVersion = await runAppleScript(`
-tell application "Mail"
-  return its version
-end tell`);
-  console.error("Mail version:", mailVersion);
-  return true;
-  } catch (versionError) {
-  console.error("Error getting Mail version:", versionError);
-  throw new Error(
-  "Mail app is running but cannot access mailboxes. Please check permissions and configuration.",
-  );
+  
+  // Don't forget the last header
+  if (currentHeader && currentLines.length > 0) {
+    const headerName = currentHeader.split(':')[0].trim().toLowerCase();
+    if (requestedLower.has(headerName)) {
+      filteredLines.push(...currentLines);
+    }
   }
-  }
-  } catch (error) {
-  console.error("Mail access check failed:", error);
-  throw new Error(
-  `Cannot access Mail app. Please make sure Mail is running and properly configured. Error: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  }
+  
+  return filteredLines.join('\n');
 }
 
 interface MailAttachment {
@@ -118,378 +123,430 @@ interface MailAccountDetails extends MailAccount {
   deliveryAccount: string;
 }
 
-async function getUnreadMails(limit = 10): Promise<EmailMessage[]> {
+const MAIL_JXA_HELPERS = `
+ObjC.import("Foundation");
+
+function toText(input, fallback = null) {
+  return ${JXAConverters.toString("input", "fallback")};
+}
+
+function toISO(input, fallback = null) {
+  return ${JXAConverters.toISOString("input", "fallback")};
+}
+
+function safeCall(fn, fallback) {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
+    const value = fn();
+    return value === undefined ? fallback : value;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function toBoolean(value, fallback = false) {
+  return value === null || value === undefined ? fallback : Boolean(value);
+}
+
+function toNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toStringArray(values) {
+  if (!Array.isArray(values)) {
+    return [];
   }
 
-  // First, try with AppleScript which might be more reliable for this case
-  try {
-  const script = `
-tell application "Mail"
-  set allMailboxes to every mailbox
-  set resultList to {}
+  return values
+    .map((value) => toText(value, ""))
+    .filter((value) => value.length > 0);
+}
 
-  repeat with m in allMailboxes
-  try
-  set unreadMessages to (messages of m whose read status is false)
-  if (count of unreadMessages) > 0 then
-  set msgLimit to ${limit}
-  if (count of unreadMessages) < msgLimit then
-  set msgLimit to (count of unreadMessages)
-  end if
+function getNestedMailboxes(mailboxes) {
+  const result = [];
+  const queue = Array.isArray(mailboxes) ? [...mailboxes] : [];
 
-  repeat with i from 1 to msgLimit
-  try
-  set currentMsg to item i of unreadMessages
-  set msgData to {subject:(subject of currentMsg), sender:(sender of currentMsg), ¬
-  date:(date sent of currentMsg) as string, mailbox:(name of m)}
+  while (queue.length > 0) {
+    const mailbox = queue.shift();
+    if (!mailbox) {
+      continue;
+    }
 
-  try
-  set msgContent to content of currentMsg
-  if length of msgContent > 500 then
-  set msgContent to (text 1 thru 500 of msgContent) & "..."
-  end if
-  set msgData to msgData & {content:msgContent}
-  on error
-  set msgData to msgData & {content:"[Content not available]"}
-  end try
+    result.push(mailbox);
 
-  set end of resultList to msgData
-  end try
-  end repeat
-
-  if (count of resultList) ≥ ${limit} then exit repeat
-  end if
-  end try
-  end repeat
-
-  return resultList
-end tell`;
-
-  const asResult = await runAppleScript(script);
-
-  // If we got results, parse them
-  if (asResult && asResult.toString().trim().length > 0) {
-  try {
-  // Try to parse as JSON if the result looks like JSON
-  if (asResult.startsWith("{") || asResult.startsWith("[")) {
-  const parsedResults = JSON.parse(asResult);
-  if (Array.isArray(parsedResults) && parsedResults.length > 0) {
-  return parsedResults.map((msg) => ({
-  subject: msg.subject || "No subject",
-  sender: msg.sender || "Unknown sender",
-  dateSent: msg.date || new Date().toString(),
-  content: msg.content || "[Content not available]",
-  isRead: false, // These are all unread by definition
-  mailbox: msg.mailbox || "Unknown mailbox",
-  }));
-  }
+    const children = safeCall(() => mailbox.mailboxes(), []);
+    if (Array.isArray(children) && children.length > 0) {
+      queue.push(...children);
+    }
   }
 
-  // If it's not in JSON format, try to parse the plist/record format
-  const parsedEmails: EmailMessage[] = [];
+  return result;
+}
 
-  // Very simple parsing for the record format that AppleScript might return
-  // This is a best-effort attempt and might not be perfect
-  const matches = asResult.match(/\{([^}]+)\}/g);
-  if (matches && matches.length > 0) {
-  for (const match of matches) {
-  try {
-  // Parse key-value pairs
-  const props = match.substring(1, match.length - 1).split(",");
-  const emailData: { [key: string]: string } = {};
+function findMailboxRecursive(mailboxes, targetName) {
+  const allMailboxes = getNestedMailboxes(mailboxes);
 
-  for (const prop of props) {
-  const parts = prop.split(":");
-  if (parts.length >= 2) {
-  const key = parts[0].trim();
-  const value = parts.slice(1).join(":").trim();
-  emailData[key] = value;
-  }
+  for (const mailbox of allMailboxes) {
+    const mailboxName = toText(safeCall(() => mailbox.name(), null), null);
+    if (mailboxName === targetName) {
+      return mailbox;
+    }
   }
 
-  if (emailData.subject || emailData.sender) {
-  parsedEmails.push({
-  subject: emailData.subject || "No subject",
-  sender: emailData.sender || "Unknown sender",
-  dateSent: emailData.date || new Date().toString(),
-  content: emailData.content || "[Content not available]",
-  isRead: false,
-  mailbox: emailData.mailbox || "Unknown mailbox",
-  });
-  }
-  } catch (parseError) {
-  console.error("Error parsing email match:", parseError);
-  }
-  }
-  }
+  return null;
+}
 
-  if (parsedEmails.length > 0) {
-  return parsedEmails;
-  }
-  } catch (parseError) {
-  console.error("Error parsing AppleScript result:", parseError);
-  // If parsing failed, continue to the JXA approach
-  }
-  }
-
-  // If the raw result contains useful info but parsing failed
-  if (
-  asResult.includes("subject") &&
-  asResult.includes("sender")
-  ) {
-  console.error("Returning raw AppleScript result for debugging");
-  return [
-  {
-  subject: "Raw AppleScript Output",
-  sender: "Mail System",
-  dateSent: new Date().toString(),
-  content: `Could not parse Mail data properly. Raw output: ${asResult}`,
-  isRead: false,
-  mailbox: "Debug",
-  },
-  ];
-  }
-  } catch (asError) {
-  // Continue to JXA approach as fallback
-  }
-
-  console.error("Trying JXA approach for unread emails...");
-  // Check Mail accounts as a different approach
-  const accounts = await runAppleScript(`
-tell application "Mail"
-  set accts to {}
-  repeat with a in accounts
-  set end of accts to name of a
-  end repeat
-  return accts
-end tell`);
-  console.error("Available accounts:", accounts);
-
-  // Try using direct AppleScript to check for unread messages across all accounts
-  const unreadInfo = await runAppleScript(`
-tell application "Mail"
-  set unreadInfo to {}
-  repeat with m in every mailbox
-  try
-  set unreadCount to count (messages of m whose read status is false)
-  if unreadCount > 0 then
-  set end of unreadInfo to {name of m, unreadCount}
-  end if
-  end try
-  end repeat
-  return unreadInfo
-end tell`);
-  console.error("Mailboxes with unread messages:", unreadInfo);
-
-  // Fallback to JXA approach
-  const unreadMails: EmailMessage[] = await run((limit: number) => {
-  const Mail = Application("Mail");
-  const results = [];
-
-  try {
-  const accounts = Mail.accounts();
-
-  for (const account of accounts) {
-  try {
-  const accountName = account.name();
-  try {
-  const accountMailboxes = account.mailboxes();
-
-  for (const mailbox of accountMailboxes) {
-  try {
-  const boxName = mailbox.name();
-
-  // biome-ignore lint/suspicious/noImplicitAnyLet: <explanation>
-  let unreadMessages;
-  try {
-  unreadMessages = mailbox.messages.whose({
-  readStatus: false,
-  })();
-
-  const count = Math.min(
-  unreadMessages.length,
-  limit - results.length,
+function getHeaders(message) {
+  const allHeaders = safeCall(
+    () => (typeof message.allHeaders === "function" ? message.allHeaders() : null),
+    null,
   );
-  for (let i = 0; i < count; i++) {
+  if (allHeaders !== null && allHeaders !== undefined && allHeaders !== "") {
+    return toText(allHeaders, null);
+  }
+
+  const source = safeCall(
+    () => (typeof message.source === "function" ? message.source() : null),
+    null,
+  );
+  if (source !== null && source !== undefined && source !== "") {
+    return toText(source, null);
+  }
+
+  return null;
+}
+
+function getContentPreview(message) {
+  const contentValue = safeCall(
+    () => (typeof message.content === "function" ? message.content() : null),
+    null,
+  );
+  const content = toText(contentValue, null);
+
+  if (content === null || content.length === 0) {
+    return "[No content]";
+  }
+
+  return content.length > 500 ? content.slice(0, 500) + "..." : content;
+}
+
+function buildAttachment(attachment) {
+  return {
+    name: toText(safeCall(() => attachment.name(), null), ""),
+    mimeType: toText(
+      safeCall(() => (typeof attachment.mimeType === "function" ? attachment.mimeType() : null), null),
+      "",
+    ),
+    fileSize: toNumber(
+      safeCall(() => (typeof attachment.fileSize === "function" ? attachment.fileSize() : 0), 0),
+      0,
+    ),
+    downloaded: toBoolean(
+      safeCall(() => (typeof attachment.downloaded === "function" ? attachment.downloaded() : false), false),
+      false,
+    ),
+    id: toText(
+      safeCall(() => (typeof attachment.id === "function" ? attachment.id() : null), null),
+      "",
+    ),
+  };
+}
+
+function buildMessage(message, mailboxName, includeAttachments, includeHeaders) {
+  const result = {
+    subject: toText(safeCall(() => message.subject(), null), "No subject"),
+    sender: toText(safeCall(() => message.sender(), null), "Unknown sender"),
+    dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
+    content: getContentPreview(message),
+    isRead: toBoolean(safeCall(() => message.readStatus(), false), false),
+    mailbox: mailboxName,
+  };
+
+  if (includeAttachments) {
+    const attachments = safeCall(() => message.mailAttachments(), []);
+    result.attachments = Array.isArray(attachments)
+      ? attachments.map((attachment) => buildAttachment(attachment))
+      : [];
+  }
+
+  if (includeHeaders) {
+    result.headers = getHeaders(message);
+  }
+
+  return result;
+}
+
+function buildMailboxSummary(mailbox) {
+  const messages = safeCall(() => mailbox.messages(), []);
+  return {
+    name: toText(safeCall(() => mailbox.name(), null), "Unknown mailbox"),
+    id: toText(safeCall(() => mailbox.id(), null), ""),
+    unreadCount: toNumber(
+      safeCall(() => (typeof mailbox.unreadCount === "function" ? mailbox.unreadCount() : 0), 0),
+      0,
+    ),
+    totalCount: Array.isArray(messages) ? messages.length : 0,
+    children: [],
+  };
+}
+
+function buildMailboxInfo(mailbox, recursive) {
+  const summary = buildMailboxSummary(mailbox);
+  const children = safeCall(() => mailbox.mailboxes(), []);
+
+  if (!Array.isArray(children)) {
+    return summary;
+  }
+
+  summary.children = children.map((child) =>
+    recursive ? buildMailboxInfo(child, true) : buildMailboxSummary(child),
+  );
+
+  return summary;
+}
+`;
+
+function buildMailScript(functionBody: string): string {
+  return wrapJXAFunction(`
+    ${MAIL_JXA_HELPERS}
+    ${functionBody}
+  `);
+}
+
+function normalizeLimit(limit: number): number {
+  return Math.max(0, Math.trunc(limit));
+}
+
+function processHeaders(messages: EmailMessage[], headerFilter?: string[]): EmailMessage[] {
+  for (const message of messages) {
+    if (!message.headers) {
+      continue;
+    }
+
+    if (headerFilter && headerFilter.length > 0) {
+      message.headers = filterHeaders(message.headers, headerFilter);
+    }
+
+    message.messageLink = createMessageLink(message.headers, message.subject);
+  }
+
+  return messages;
+}
+
+function toMailError(prefix: string, error: unknown): Error {
+  if (error instanceof JXAAppNotRunningError || error instanceof JXAExecutionError) {
+    return new Error(`${prefix}: ${error.message}`);
+  }
+
+  return new Error(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+async function checkMailAccess(): Promise<boolean> {
   try {
-  const msg = unreadMessages[i];
-  results.push({
-  subject: msg.subject(),
-  sender: msg.sender(),
-  dateSent: msg.dateSent().toString(),
-  content: msg.content()
-  ? msg.content().substring(0, 500)
-  : "[No content]",
-  isRead: false,
-  mailbox: `${accountName} - ${boxName}`,
-  });
-  } catch (msgError) {}
-  }
-  } catch (unreadError) {}
-  } catch (boxError) {}
+    const runningScript = buildMailScript(`
+      const SystemEvents = Application("System Events");
+      const isRunning = SystemEvents.processes.whose({ name: "Mail" })().length > 0;
+      return JSON.stringify(isRunning);
+    `);
 
-  if (results.length >= limit) {
-  break;
-  }
-  }
-  } catch (mbError) {}
+    let isRunning = false;
 
-  if (results.length >= limit) {
-  break;
-  }
-  } catch (accError) {}
-  }
-  } catch (error) {}
+    try {
+      isRunning = (await executeJXA<boolean>(runningScript)) === true;
+    } catch (error) {
+      if (!(error instanceof JXAAppNotRunningError) && !(error instanceof JXAExecutionError)) {
+        throw error;
+      }
+    }
 
-  return results;
-  }, limit);
+    if (!isRunning) {
+      const activateScript = buildMailScript(`
+        const Mail = Application("Mail");
+        Mail.activate();
+        delay(2);
+        return JSON.stringify(true);
+      `);
+      await executeJXA<boolean>(activateScript);
+    }
 
-  return unreadMails;
+    try {
+      const mailboxScript = buildMailScript(`
+        const Mail = Application("Mail");
+        return JSON.stringify(Mail.mailboxes().length >= 0);
+      `);
+      return (await executeJXA<boolean>(mailboxScript)) === true;
+    } catch (error) {
+      if (!(error instanceof JXAAppNotRunningError) && !(error instanceof JXAExecutionError)) {
+        throw error;
+      }
+    }
+
+    const versionScript = buildMailScript(`
+      const Mail = Application("Mail");
+      const version = ${JXAConverters.toString("Mail.version()", '""')};
+      return JSON.stringify(version.length > 0);
+    `);
+
+    return (await executeJXA<boolean>(versionScript)) === true;
   } catch (error) {
-  console.error("Error in getUnreadMails:", error);
-  throw new Error(
-  `Error accessing mail: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError(
+      "Cannot access Mail app. Please make sure Mail is running and properly configured",
+      error,
+    );
+  }
+}
+
+async function getUnreadMails(
+  limit = 10,
+  includeHeaders?: boolean,
+  headerFilter?: string[],
+  accountName?: string,
+): Promise<EmailMessage[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const normalizedLimit = normalizeLimit(limit);
+    if (normalizedLimit === 0) {
+      return [];
+    }
+
+    const includeHeadersFlag = includeHeaders === true;
+    const escapedAccountName = accountName ? escapeJXAString(accountName) : null;
+    const accountExpression = escapedAccountName ? `"${escapedAccountName}"` : "null";
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const limit = ${normalizedLimit};
+      const includeHeaders = ${includeHeadersFlag};
+      const targetAccountName = ${accountExpression};
+      const results = [];
+
+      let accounts;
+      if (targetAccountName) {
+        const matched = safeCall(() => Mail.accounts.whose({ name: targetAccountName })(), []);
+        accounts = Array.isArray(matched) ? matched : [];
+      } else {
+        accounts = safeCall(() => Mail.accounts(), []);
+        accounts = Array.isArray(accounts) ? accounts : [];
+      }
+
+      for (let a = 0; a < accounts.length && results.length < limit; a++) {
+        // Try to get the inbox directly instead of iterating all mailboxes
+        const inboxNames = ["INBOX", "Posteingang", "Inbox"];
+        let targetMailboxes = [];
+
+        for (let n = 0; n < inboxNames.length && targetMailboxes.length === 0; n++) {
+          targetMailboxes = safeCall(
+            () => accounts[a].mailboxes.whose({ name: inboxNames[n] })(),
+            [],
+          );
+        }
+
+        // If we couldn't find inbox by name, just get the first mailbox
+        if (!Array.isArray(targetMailboxes) || targetMailboxes.length === 0) {
+          const allMailboxes = safeCall(() => accounts[a].mailboxes(), []);
+          targetMailboxes = Array.isArray(allMailboxes) && allMailboxes.length > 0
+            ? [allMailboxes[0]]
+            : [];
+        }
+
+        for (let m = 0; m < targetMailboxes.length && results.length < limit; m++) {
+          const mailbox = targetMailboxes[m];
+          const mailboxName = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
+          const unreadMessages = safeCall(() => mailbox.messages.whose({ readStatus: false })(), []);
+          const count = Math.min(unreadMessages.length, limit - results.length);
+
+          for (let index = 0; index < count; index++) {
+            results.push(buildMessage(unreadMessages[index], mailboxName, false, includeHeaders));
+          }
+        }
+      }
+
+      return JSON.stringify(results);
+    `);
+
+    const unreadMails = await executeJXA<EmailMessage[]>(script);
+    const resolvedMails = Array.isArray(unreadMails) ? unreadMails : [];
+
+    return includeHeadersFlag ? processHeaders(resolvedMails, headerFilter) : resolvedMails;
+  } catch (error) {
+    throw toMailError("Error accessing mail", error);
   }
 }
 
 async function searchMails(
   searchTerm: string,
   limit = 10,
+  includeHeaders?: boolean,
+  headerFilter?: string[],
 ): Promise<EmailMessage[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  // Ensure Mail app is running
-  await runAppleScript(`
-if application "Mail" is not running then
-  tell application "Mail" to activate
-  delay 2
-end if`);
+    const normalizedLimit = normalizeLimit(limit);
+    if (normalizedLimit === 0) {
+      return [];
+    }
 
-  // First try the AppleScript approach which might be more reliable
-  try {
-  const script = `
-tell application "Mail"
-  set searchString to "${searchTerm.replace(/"/g, '\\"')}"
-  set foundMsgs to {}
-  set allBoxes to every mailbox
+    const escapedSearchTerm = escapeJXAString(searchTerm);
+    const includeHeadersFlag = includeHeaders === true;
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const searchTerm = "${escapedSearchTerm}";
+      const normalizedSearchTerm = searchTerm.toLowerCase();
+      const limit = ${normalizedLimit};
+      const includeHeaders = ${includeHeadersFlag};
+      const results = [];
+      const accounts = safeCall(() => Mail.accounts(), []);
 
-  repeat with currentBox in allBoxes
-  try
-  set boxMsgs to (messages of currentBox whose (subject contains searchString) or (content contains searchString))
-  set foundMsgs to foundMsgs & boxMsgs
-  if (count of foundMsgs) ≥ ${limit} then exit repeat
-  end try
-  end repeat
+      for (const account of Array.isArray(accounts) ? accounts : []) {
+        const mailboxes = getNestedMailboxes(safeCall(() => account.mailboxes(), []));
 
-  set resultList to {}
-  set msgCount to (count of foundMsgs)
-  if msgCount > ${limit} then set msgCount to ${limit}
+        for (const mailbox of mailboxes) {
+          const mailboxName = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
+          const messages = safeCall(() => mailbox.messages(), []);
 
-  repeat with i from 1 to msgCount
-  try
-  set currentMsg to item i of foundMsgs
-  set msgInfo to {subject:subject of currentMsg, sender:sender of currentMsg, ¬
-  date:(date sent of currentMsg) as string, isRead:read status of currentMsg, ¬
-  boxName:name of (mailbox of currentMsg)}
-  set end of resultList to msgInfo
-  end try
-  end repeat
+          for (const message of Array.isArray(messages) ? messages : []) {
+            const subject = toText(safeCall(() => message.subject(), null), "").toLowerCase();
+            const content = toText(
+              safeCall(() => (typeof message.content === "function" ? message.content() : null), null),
+              "",
+            ).toLowerCase();
 
-  return resultList
-end tell`;
+            if (!subject.includes(normalizedSearchTerm) && !content.includes(normalizedSearchTerm)) {
+              continue;
+            }
 
-  const asResult = await runAppleScript(script);
+            results.push(buildMessage(message, mailboxName, false, includeHeaders));
 
-  // If we got results, parse them
-  if (asResult && asResult.length > 0) {
-  try {
-  const parsedResults = JSON.parse(asResult);
-  if (Array.isArray(parsedResults) && parsedResults.length > 0) {
-  return parsedResults.map((msg) => ({
-  subject: msg.subject || "No subject",
-  sender: msg.sender || "Unknown sender",
-  dateSent: msg.date || new Date().toString(),
-  content: "[Content not available through AppleScript method]",
-  isRead: msg.isRead || false,
-  mailbox: msg.boxName || "Unknown mailbox",
-  }));
-  }
-  } catch (parseError) {
-  console.error("Error parsing AppleScript result:", parseError);
-  // Continue to JXA approach if parsing fails
-  }
-  }
-  } catch (asError) {
-  // Continue to JXA approach
-  }
+            if (results.length >= limit) {
+              break;
+            }
+          }
 
-  // JXA approach as fallback
-  const searchResults: EmailMessage[] = await run(
-  (searchTerm: string, limit: number) => {
-  const Mail = Application("Mail");
-  const results = [];
+          if (results.length >= limit) {
+            break;
+          }
+        }
 
-  try {
-  const mailboxes = Mail.mailboxes();
+        if (results.length >= limit) {
+          break;
+        }
+      }
 
-  for (const mailbox of mailboxes) {
-  try {
-  // biome-ignore lint/suspicious/noImplicitAnyLet: <explanation>
-  let messages;
-  try {
-  messages = mailbox.messages.whose({
-  _or: [
-  { subject: { _contains: searchTerm } },
-  { content: { _contains: searchTerm } },
-  ],
-  })();
+      return JSON.stringify(results);
+    `);
 
-  const count = Math.min(messages.length, limit);
+    const searchResults = await executeJXA<EmailMessage[]>(script);
+    const resolvedResults = Array.isArray(searchResults) ? searchResults : [];
 
-  for (let i = 0; i < count; i++) {
-  try {
-  const msg = messages[i];
-  results.push({
-  subject: msg.subject(),
-  sender: msg.sender(),
-  dateSent: msg.dateSent().toString(),
-  content: msg.content()
-  ? msg.content().substring(0, 500)
-  : "[No content]", // Limit content length
-  isRead: msg.readStatus(),
-  mailbox: mailbox.name(),
-  });
-  } catch (msgError) {}
-  }
-
-  if (results.length >= limit) {
-  break;
-  }
-  } catch (queryError) {
-  }
-  } catch (boxError) {}
-  }
-  } catch (mbError) {}
-
-  return results.slice(0, limit);
-  },
-  searchTerm,
-  limit,
-  );
-
-  return searchResults;
+    return includeHeadersFlag ? processHeaders(resolvedResults, headerFilter) : resolvedResults;
   } catch (error) {
-  console.error("Error in searchMails:", error);
-  throw new Error(
-  `Error searching mail: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error searching mail", error);
   }
 }
 
@@ -501,295 +558,253 @@ async function sendMail(
   bcc?: string,
 ): Promise<string | undefined> {
   try {
-  if (!(await checkMailAccess())) {
-  throw new Error("Could not access Mail app");
-  }
+    if (!(await checkMailAccess())) {
+      throw new Error("Could not access Mail app");
+    }
 
-  // Ensure Mail app is running
-  await runAppleScript(`
-if application "Mail" is not running then
-  tell application "Mail" to activate
-  delay 2
-end if`);
+    const escapedTo = escapeJXAString(to);
+    const escapedSubject = escapeJXAString(subject);
+    const escapedBody = escapeJXAString(body);
+    const escapedCc = cc === undefined ? null : escapeJXAString(cc);
+    const escapedBcc = bcc === undefined ? null : escapeJXAString(bcc);
 
-  // Escape special characters in strings for AppleScript
-  const escapedTo = to.replace(/"/g, '\\"');
-  const escapedSubject = subject.replace(/"/g, '\\"');
-  const escapedBody = body.replace(/"/g, '\\"');
-  const escapedCc = cc ? cc.replace(/"/g, '\\"') : "";
-  const escapedBcc = bcc ? bcc.replace(/"/g, '\\"') : "";
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const toAddress = "${escapedTo}";
+      const subject = "${escapedSubject}";
+      const body = "${escapedBody}";
+      const ccAddress = ${escapedCc === null ? "null" : `"${escapedCc}"`};
+      const bccAddress = ${escapedBcc === null ? "null" : `"${escapedBcc}"`};
 
-  let script = `
-tell application "Mail"
-  set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", content:"${escapedBody}", visible:true}
-  tell newMessage
-  make new to recipient with properties {address:"${escapedTo}"}
-`;
+      Mail.activate();
 
-  if (cc) {
-  script += `        make new cc recipient with properties {address:"${escapedCc}"}\n`;
-  }
+      const message = Mail.OutgoingMessage().make();
+      message.subject = subject;
+      message.content = body;
+      message.visible = true;
 
-  if (bcc) {
-  script += `        make new bcc recipient with properties {address:"${escapedBcc}"}\n`;
-  }
+      const toRecipient = Mail.ToRecipient().make();
+      toRecipient.address = toAddress;
+      message.toRecipients.push(toRecipient);
 
-  script += `    end tell
-  send newMessage
-  return "success"
-end tell
-`;
+      if (ccAddress !== null) {
+        const ccRecipient = Mail.CcRecipient().make();
+        ccRecipient.address = ccAddress;
+        message.ccRecipients.push(ccRecipient);
+      }
 
-  try {
-  const result = await runAppleScript(script);
-  if (result === "success") {
-  return `Email sent to ${to} with subject "${subject}"`;
-  // biome-ignore lint/style/noUselessElse: <explanation>
-  } else {
-  }
-  } catch (asError) {
-  console.error("Error in AppleScript send:", asError);
+      if (bccAddress !== null) {
+        const bccRecipient = Mail.BccRecipient().make();
+        bccRecipient.address = bccAddress;
+        message.bccRecipients.push(bccRecipient);
+      }
 
-  const jxaResult: string = await run(
-  (to, subject, body, cc, bcc) => {
-  try {
-  const Mail = Application("Mail");
+      message.send();
 
-  const msg = Mail.OutgoingMessage().make();
-  msg.subject = subject;
-  msg.content = body;
-  msg.visible = true;
+      return JSON.stringify(true);
+    `);
 
-  // Add recipients
-  const toRecipient = Mail.ToRecipient().make();
-  toRecipient.address = to;
-  msg.toRecipients.push(toRecipient);
+    const result = await executeJXA<boolean>(script);
 
-  if (cc) {
-  const ccRecipient = Mail.CcRecipient().make();
-  ccRecipient.address = cc;
-  msg.ccRecipients.push(ccRecipient);
-  }
+    if (result !== true) {
+      throw new Error("Mail send did not complete successfully");
+    }
 
-  if (bcc) {
-  const bccRecipient = Mail.BccRecipient().make();
-  bccRecipient.address = bcc;
-  msg.bccRecipients.push(bccRecipient);
-  }
-
-  msg.send();
-  return "JXA send completed";
+    return `Email sent to ${to} with subject "${subject}"`;
   } catch (error) {
-  return `JXA error: ${error}`;
-  }
-  },
-  to,
-  subject,
-  body,
-  cc,
-  bcc,
-  );
-
-  if (jxaResult.startsWith("JXA error:")) {
-  throw new Error(jxaResult);
-  }
-
-  return `Email sent to ${to} with subject "${subject}"`;
-  }
-  } catch (error) {
-  console.error("Error in sendMail:", error);
-  throw new Error(
-  `Error sending mail: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error sending mail", error);
   }
 }
 
 async function getMailboxes(): Promise<string[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  // Ensure Mail app is running
-  await runAppleScript(`
-if application "Mail" is not running then
-  tell application "Mail" to activate
-  delay 2
-end if`);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const mailboxes = safeCall(() => Mail.mailboxes(), []);
+      const result = Array.isArray(mailboxes)
+        ? mailboxes.map((mailbox) => toText(safeCall(() => mailbox.name(), null), "Unknown mailbox"))
+        : [];
+      return JSON.stringify(result);
+    `);
 
-  const mailboxes: string[] = await run(() => {
-  const Mail = Application("Mail");
-
-  try {
-  const mailboxes = Mail.mailboxes();
-
-  if (!mailboxes || mailboxes.length === 0) {
-  try {
-  const result = Mail.execute({
-  withObjectModel: "Mail Suite",
-  withCommand: "get name of every mailbox",
-  });
-
-  if (result && result.length > 0) {
-  return result;
-  }
-  } catch (execError) {}
-
-  return [];
-  }
-
-  return mailboxes.map((box: unknown) => {
-  try {
-  return (box as { name: () => string }).name();
-  } catch (nameError) {
-  return "Unknown mailbox";
-  }
-  });
+    const mailboxes = await executeJXA<string[]>(script);
+    return Array.isArray(mailboxes) ? mailboxes : [];
   } catch (error) {
-  return [];
-  }
-  });
-
-  return mailboxes;
-  } catch (error) {
-  console.error("Error in getMailboxes:", error);
-  throw new Error(
-  `Error getting mailboxes: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting mailboxes", error);
   }
 }
 
 async function getAccounts(): Promise<string[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  const accounts = await runAppleScript(`
-tell application "Mail"
-  set acctNames to {}
-  repeat with a in accounts
-  set end of acctNames to name of a
-  end repeat
-  return acctNames
-end tell`);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accounts = safeCall(() => Mail.accounts(), []);
+      const result = Array.isArray(accounts)
+        ? accounts.map((account) => toText(safeCall(() => account.name(), null), ""))
+        : [];
+      return JSON.stringify(result);
+    `);
 
-  return accounts ? accounts.split(", ") : [];
+    const accounts = await executeJXA<string[]>(script);
+    return Array.isArray(accounts) ? accounts : [];
   } catch (error) {
-  console.error("Error getting accounts:", error);
-  throw new Error(
-  `Error getting mail accounts: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting mail accounts", error);
   }
 }
 
 async function getMailboxesForAccount(accountName: string): Promise<string[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  const mailboxes = await runAppleScript(`
-tell application "Mail"
-  set boxNames to {}
-  try
-  set targetAccount to first account whose name is "${accountName.replace(/"/g, '\\"')}"
-  set acctMailboxes to every mailbox of targetAccount
-  repeat with mb in acctMailboxes
-  set end of boxNames to name of mb
-  end repeat
-  on error errMsg
-  return "Error: " & errMsg
-  end try
-  return boxNames
-end tell`);
+    const escapedAccountName = escapeJXAString(accountName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
-  if (mailboxes?.startsWith("Error:")) {
-  console.error(mailboxes);
-  return [];
-  }
+      if (!Array.isArray(matches) || matches.length === 0) {
+        return JSON.stringify([]);
+      }
 
-  return mailboxes ? mailboxes.split(", ") : [];
+      const mailboxes = safeCall(() => matches[0].mailboxes(), []);
+      const result = Array.isArray(mailboxes)
+        ? mailboxes.map((mailbox) => toText(safeCall(() => mailbox.name(), null), "Unknown mailbox"))
+        : [];
+
+      return JSON.stringify(result);
+    `);
+
+    const mailboxes = await executeJXA<string[]>(script);
+    return Array.isArray(mailboxes) ? mailboxes : [];
   } catch (error) {
-  console.error("Error getting mailboxes for account:", error);
-  throw new Error(
-  `Error getting mailboxes for account ${accountName}: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError(`Error getting mailboxes for account ${accountName}`, error);
   }
 }
 
 async function getAccountSummaries(): Promise<MailAccount[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  const accounts = (await run(() => {
-  const Mail = Application("Mail");
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  return Mail.accounts().map((acc: any) => {
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  let id = "";
-  try { id = String(acc.id()); } catch {}
-  return {
-  name: acc.name(),
-  id,
-  type: acc.accountType ? String(acc.accountType()) : "",
-  addresses: acc.emailAddresses ? acc.emailAddresses() : [],
-  enabled: acc.enabled ? acc.enabled() : false,
-  } as MailAccount;
-  });
-  })) as MailAccount[];
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accounts = safeCall(() => Mail.accounts(), []);
+      const result = Array.isArray(accounts)
+        ? accounts.map((account) => ({
+            name: toText(safeCall(() => account.name(), null), ""),
+            id: toText(safeCall(() => account.id(), null), ""),
+            type: toText(
+              safeCall(() => (typeof account.accountType === "function" ? account.accountType() : null), null),
+              "",
+            ),
+            addresses: toStringArray(
+              safeCall(() => (typeof account.emailAddresses === "function" ? account.emailAddresses() : []), []),
+            ),
+            enabled: toBoolean(
+              safeCall(() => (typeof account.enabled === "function" ? account.enabled() : false), false),
+              false,
+            ),
+          }))
+        : [];
+      return JSON.stringify(result);
+    `);
 
-  return accounts;
+    const accounts = await executeJXA<MailAccount[]>(script);
+    return Array.isArray(accounts) ? accounts : [];
   } catch (error) {
-  console.error("Error getting account summaries:", error);
-  throw new Error(
-  `Error getting account summaries: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting account summaries", error);
   }
 }
 
 async function getAccountDetails(accountName: string): Promise<MailAccountDetails | undefined> {
   try {
-  if (!(await checkMailAccess())) {
-  return undefined;
-  }
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
 
-  const details = (await run((name: string) => {
-  const Mail = Application("Mail");
-  const matches = Mail.accounts.whose({ name })();
-  if (!matches || matches.length === 0) return null;
-  const acc = matches[0];
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  let id = "";
-  try { id = String(acc.id()); } catch {}
-  return {
-  name: acc.name(),
-  id,
-  type: acc.accountType ? String(acc.accountType()) : "",
-  addresses: acc.emailAddresses ? acc.emailAddresses() : [],
-  enabled: acc.enabled ? acc.enabled() : false,
-  server: acc.serverName ? acc.serverName() : "",
-  port: acc.port ? acc.port() : 0,
-  usesSSL: acc.usesSSL ? acc.usesSSL() : false,
-  authentication: acc.authentication ? String(acc.authentication()) : "",
-  fullName: acc.fullName ? acc.fullName() : "",
-  accountDirectory: acc.accountDirectory ? acc.accountDirectory().toString() : "",
-  deliveryAccount: acc.deliveryAccount ? acc.deliveryAccount().name() : "",
-  } as MailAccountDetails;
-  }, accountName)) as MailAccountDetails | null;
+    const escapedAccountName = escapeJXAString(accountName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
-  if (!details) {
-  throw new Error(`Account '${accountName}' not found`);
-  }
+      if (!Array.isArray(matches) || matches.length === 0) {
+        return JSON.stringify(null);
+      }
 
-  return details;
+      const account = matches[0];
+      const deliveryAccount = safeCall(
+        () => (typeof account.deliveryAccount === "function" ? account.deliveryAccount() : null),
+        null,
+      );
+
+      return JSON.stringify({
+        name: toText(safeCall(() => account.name(), null), ""),
+        id: toText(safeCall(() => account.id(), null), ""),
+        type: toText(
+          safeCall(() => (typeof account.accountType === "function" ? account.accountType() : null), null),
+          "",
+        ),
+        addresses: toStringArray(
+          safeCall(() => (typeof account.emailAddresses === "function" ? account.emailAddresses() : []), []),
+        ),
+        enabled: toBoolean(
+          safeCall(() => (typeof account.enabled === "function" ? account.enabled() : false), false),
+          false,
+        ),
+        server: toText(
+          safeCall(() => (typeof account.serverName === "function" ? account.serverName() : null), null),
+          "",
+        ),
+        port: toNumber(
+          safeCall(() => (typeof account.port === "function" ? account.port() : 0), 0),
+          0,
+        ),
+        usesSSL: toBoolean(
+          safeCall(() => (typeof account.usesSSL === "function" ? account.usesSSL() : false), false),
+          false,
+        ),
+        authentication: toText(
+          safeCall(() => (typeof account.authentication === "function" ? account.authentication() : null), null),
+          "",
+        ),
+        fullName: toText(
+          safeCall(() => (typeof account.fullName === "function" ? account.fullName() : null), null),
+          "",
+        ),
+        accountDirectory: toText(
+          safeCall(
+            () => (typeof account.accountDirectory === "function" ? account.accountDirectory() : null),
+            null,
+          ),
+          "",
+        ),
+        deliveryAccount: deliveryAccount
+          ? toText(safeCall(() => deliveryAccount.name(), null), "")
+          : "",
+      });
+    `);
+
+    const details = await executeJXA<MailAccountDetails | null>(script);
+
+    if (!details) {
+      throw new Error(`Account '${accountName}' not found`);
+    }
+
+    return details;
   } catch (error) {
-  console.error("Error getting account details:", error);
-  throw new Error(
-  `Error getting account details: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting account details", error);
   }
 }
 
@@ -798,98 +813,70 @@ async function getMailboxProperties(
   mailboxName: string,
 ): Promise<MailboxInfo | undefined> {
   try {
-  if (!(await checkMailAccess())) {
-  return undefined;
-  }
+    if (!(await checkMailAccess())) {
+      return undefined;
+    }
 
-  const info = (await run((acct: string, mbx: string) => {
-  const Mail = Application("Mail");
-  const account = Mail.accounts.whose({ name: acct })();
-  if (!account || account.length === 0) return null;
-  const box = account[0].mailboxes.whose({ name: mbx })();
-  if (!box || box.length === 0) return null;
-  const target = box[0];
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
-  let total = 0;
-  try { total = target.messages().length; } catch {}
-  let unread = 0;
-  try { unread = target.unreadCount(); } catch {}
-  let id = "";
-  try { id = String(target.id()); } catch {}
-  const children = [] as MailboxInfo[];
-  try {
-  const childBoxes = target.mailboxes();
-  for (const child of childBoxes) {
-  let cTotal = 0;
-  let cUnread = 0;
-  let cId = "";
-  try { cTotal = child.messages().length; } catch {}
-  try { cUnread = child.unreadCount(); } catch {}
-  try { cId = String(child.id()); } catch {}
-  children.push({
-  name: child.name(),
-  id: cId,
-  unreadCount: cUnread,
-  totalCount: cTotal,
-  children: [],
-  });
-  }
-  } catch {}
+      if (!Array.isArray(matches) || matches.length === 0) {
+        return JSON.stringify(null);
+      }
 
-  return { name: target.name(), id, unreadCount: unread, totalCount: total, children } as MailboxInfo;
-  }, accountName, mailboxName)) as MailboxInfo | null;
+      const mailbox = findMailboxRecursive(safeCall(() => matches[0].mailboxes(), []), mailboxName);
+      if (!mailbox) {
+        return JSON.stringify(null);
+      }
 
-  return info ?? undefined;
+      return JSON.stringify(buildMailboxInfo(mailbox, false));
+    `);
+
+    const info = await executeJXA<MailboxInfo | null>(script);
+    return info ?? undefined;
   } catch (error) {
-  console.error("Error getting mailbox properties:", error);
-  throw new Error(
-  `Error getting mailbox properties: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting mailbox properties", error);
   }
 }
 
 async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
+    if (!(await checkMailAccess())) {
+      return [];
+    }
 
-  const tree = (await run((acct: string) => {
-  const Mail = Application("Mail");
-  const account = Mail.accounts.whose({ name: acct })();
-  if (!account || account.length === 0) return null;
+    const escapedAccountName = escapeJXAString(accountName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
-  function build(box: any): MailboxInfo {
-  let total = 0;
-  let unread = 0;
-  let id = "";
-  try { total = box.messages().length; } catch {}
-  try { unread = box.unreadCount(); } catch {}
-  try { id = String(box.id()); } catch {}
-  const kids: MailboxInfo[] = [];
-  try {
-  const childBoxes = box.mailboxes();
-  for (const child of childBoxes) {
-  kids.push(build(child));
-  }
-  } catch {}
-  return { name: box.name(), id, unreadCount: unread, totalCount: total, children: kids };
-  }
+      if (!Array.isArray(matches) || matches.length === 0) {
+        return JSON.stringify(null);
+      }
 
-  const mailboxes = account[0].mailboxes();
-  return mailboxes.map((mb: any) => build(mb));
-  }, accountName)) as MailboxInfo[] | null;
+      const mailboxes = safeCall(() => matches[0].mailboxes(), []);
+      const result = Array.isArray(mailboxes)
+        ? mailboxes.map((mailbox) => buildMailboxInfo(mailbox, true))
+        : [];
 
-  if (!tree) {
-  throw new Error(`Account '${accountName}' not found`);
-  }
+      return JSON.stringify(result);
+    `);
 
-  return tree;
+    const tree = await executeJXA<MailboxInfo[] | null>(script);
+
+    if (!tree) {
+      throw new Error(`Account '${accountName}' not found`);
+    }
+
+    return Array.isArray(tree) ? tree : [];
   } catch (error) {
-  console.error("Error getting mailbox tree:", error);
-  throw new Error(
-  `Error getting mailbox tree: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error getting mailbox tree", error);
   }
 }
 
@@ -903,95 +890,113 @@ async function listMessages(
     endDate?: string;
     includeAttachments?: boolean;
     includeHeaders?: boolean;
+    headerFilter?: string[];
   },
 ): Promise<EmailMessage[]> {
   try {
-  if (!(await checkMailAccess())) {
-  return [];
-  }
-
-  const messages = (await run(
-  (acct: string, mbx: string, options: any) => {
-  const Mail = Application("Mail");
-  const acc = Mail.accounts.whose({ name: acct })();
-  if (!acc || acc.length === 0) return [];
-  const box = acc[0].mailboxes.whose({ name: mbx })();
-  if (!box || box.length === 0) return [];
-
-  let msgs = box[0].messages();
-  if (options && options.unreadOnly) {
-  msgs = box[0].messages.whose({ readStatus: false })();
-  }
-  if (options && options.startDate) {
-  const d = new Date(options.startDate);
-  msgs = msgs.whose({ dateSent: { _greaterThanEq: d } })();
-  }
-  if (options && options.endDate) {
-  const d = new Date(options.endDate);
-  msgs = msgs.whose({ dateSent: { _lessThanEq: d } })();
-  }
-
-  const limit = options && options.limit ? options.limit : msgs.length;
-  const result: EmailMessage[] = [];
-  const count = Math.min(msgs.length, limit);
-  for (let i = 0; i < count; i++) {
-    const m = msgs[i];
-    const msg: EmailMessage = {
-      subject: m.subject(),
-      sender: m.sender(),
-      dateSent: m.dateSent().toString(),
-      content: m.content ? (m.content() as string).substring(0, 500) : "[No content]",
-      isRead: m.readStatus(),
-      mailbox: mbx,
-    };
-
-    if (options && options.includeAttachments) {
-      try {
-        const atts = m.mailAttachments();
-        const attachments = [] as MailAttachment[];
-        for (const a of atts) {
-          attachments.push({
-            name: a.name(),
-            mimeType: a.mimeType ? String(a.mimeType()) : "",
-            fileSize: a.fileSize ? a.fileSize() : 0,
-            downloaded: a.downloaded ? a.downloaded() : false,
-            id: a.id ? String(a.id()) : "",
-          });
-        }
-        msg.attachments = attachments;
-      } catch {}
+    if (!(await checkMailAccess())) {
+      return [];
     }
 
-    if (options && options.includeHeaders) {
-      try {
-        msg.headers = m.allHeaders ? String(m.allHeaders()) : String(m.source());
-      } catch {}
-    }
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const limitLiteral =
+      opts?.limit === undefined ? "null" : String(normalizeLimit(opts.limit));
+    const startDateLiteral =
+      opts?.startDate === undefined ? "null" : `"${escapeJXAString(opts.startDate)}"`;
+    const endDateLiteral =
+      opts?.endDate === undefined ? "null" : `"${escapeJXAString(opts.endDate)}"`;
+    const unreadOnly = opts?.unreadOnly === true;
+    const includeAttachments = opts?.includeAttachments === true;
+    const includeHeaders = opts?.includeHeaders === true;
 
-    result.push(msg);
-  }
-  return result;
-  },
-  accountName,
-  mailboxName,
-  opts ?? {},
-  )) as EmailMessage[];
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const limit = ${limitLiteral};
+      const unreadOnly = ${unreadOnly};
+      const includeAttachments = ${includeAttachments};
+      const includeHeaders = ${includeHeaders};
+      const startDate = ${startDateLiteral};
+      const endDate = ${endDateLiteral};
 
-  // Generate message links for messages with headers
-  if (opts?.includeHeaders) {
-    messages.forEach(msg => {
-      if (msg.headers) {
-        msg.messageLink = createMessageLink(msg.headers, msg.subject);
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        return JSON.stringify([]);
       }
-    });
-  }
 
-  return messages;
+      // Try direct .whose() first (fast), fall back to recursive search
+      let targetMailbox = null;
+      const directMatch = safeCall(
+        () => accountMatches[0].mailboxes.whose({ name: mailboxName })(),
+        [],
+      );
+      if (Array.isArray(directMatch) && directMatch.length > 0) {
+        targetMailbox = directMatch[0];
+      } else {
+        // Fallback: recursive search for nested mailboxes
+        targetMailbox = findMailboxRecursive(
+          safeCall(() => accountMatches[0].mailboxes(), []),
+          mailboxName,
+        );
+      }
+      if (!targetMailbox) {
+        return JSON.stringify([]);
+      }
+
+      let messages;
+      if (unreadOnly) {
+        messages = safeCall(() => targetMailbox.messages.whose({ readStatus: false })(), []);
+      } else {
+        messages = safeCall(() => targetMailbox.messages(), []);
+      }
+      if (!Array.isArray(messages)) {
+        messages = [];
+      }
+
+      if (startDate !== null || endDate !== null) {
+        const startDateValue = startDate === null ? null : new Date(startDate);
+        const endDateValue = endDate === null ? null : new Date(endDate);
+
+        messages = messages.filter((message) => {
+          const dateValue = safeCall(() => message.dateSent(), null);
+          const messageDate = dateValue === null ? null : new Date(dateValue);
+
+          if (messageDate === null || Number.isNaN(messageDate.getTime())) {
+            return false;
+          }
+
+          if (startDateValue !== null && !Number.isNaN(startDateValue.getTime()) && messageDate < startDateValue) {
+            return false;
+          }
+
+          if (endDateValue !== null && !Number.isNaN(endDateValue.getTime()) && messageDate > endDateValue) {
+            return false;
+          }
+
+          return true;
+        });
+      }
+
+      if (limit !== null) {
+        messages = messages.slice(0, limit);
+      }
+
+      const resolvedMailboxName = toText(safeCall(() => targetMailbox.name(), null), mailboxName);
+      const result = messages.map((message) =>
+        buildMessage(message, resolvedMailboxName, includeAttachments, includeHeaders),
+      );
+
+      return JSON.stringify(result);
+    `);
+
+    const messages = await executeJXA<EmailMessage[]>(script);
+    const resolvedMessages = Array.isArray(messages) ? messages : [];
+
+    return includeHeaders ? processHeaders(resolvedMessages, opts?.headerFilter) : resolvedMessages;
   } catch (error) {
-  console.error("Error listing messages:", error);
-  throw new Error(
-  `Error listing messages: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error listing messages", error);
   }
 }
 
@@ -1001,54 +1006,83 @@ async function createMailbox(
   name: string,
 ): Promise<string> {
   try {
-  if (!(await checkMailAccess())) {
-  return "";
-  }
+    if (!(await checkMailAccess())) {
+      return "";
+    }
 
-  const acc = accountName.replace(/"/g, '\\"');
-  const newName = name.replace(/"/g, '\\"');
-  const parent = parentMailbox ? parentMailbox.replace(/"/g, '\\"') : null;
-  const script = `
-tell application "Mail"
-  set theAccount to first account whose name is "${acc}"
-  if theAccount is missing value then error "Account not found"
-  ${parent ? `set parentBox to first mailbox of theAccount whose name is "${parent}"
-  if parentBox is missing value then error "Parent mailbox not found"` : "set parentBox to theAccount"}
-  make new mailbox with properties {name:"${newName}"} at parentBox
-end tell`;
-  await runAppleScript(script);
-  return `Created mailbox '${name}'`;
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedName = escapeJXAString(name);
+    const parentMailboxLiteral =
+      parentMailbox === null ? "null" : `"${escapeJXAString(parentMailbox)}"`;
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedName}";
+      const parentMailbox = ${parentMailboxLiteral};
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      let targetContainer = accountMatches[0];
+
+      if (parentMailbox !== null) {
+        const parent = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), parentMailbox);
+        if (!parent) {
+          throw new Error("Parent mailbox not found");
+        }
+        targetContainer = parent;
+      }
+
+      Mail.make({
+        new: "mailbox",
+        withProperties: { name: mailboxName },
+        at: targetContainer,
+      });
+
+      return JSON.stringify(true);
+    `);
+
+    await executeJXA<boolean>(script);
+    return `Created mailbox '${name}'`;
   } catch (error) {
-  console.error("Error creating mailbox:", error);
-  throw new Error(
-  `Error creating mailbox: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error creating mailbox", error);
   }
 }
 
 async function deleteMailbox(accountName: string, mailboxName: string): Promise<string> {
   try {
-  if (!(await checkMailAccess())) {
-  return "";
-  }
+    if (!(await checkMailAccess())) {
+      return "";
+    }
 
-  const acc = accountName.replace(/"/g, '\\"');
-  const box = mailboxName.replace(/"/g, '\\"');
-  const script = `
-tell application "Mail"
-  set theAccount to first account whose name is "${acc}"
-  if theAccount is missing value then error "Account not found"
-  set targetBox to first mailbox of theAccount whose name is "${box}"
-  if targetBox is missing value then error "Mailbox not found"
-  delete targetBox
-end tell`;
-  await runAppleScript(script);
-  return `Deleted mailbox '${mailboxName}'`;
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName);
+      if (!mailbox) {
+        throw new Error("Mailbox not found");
+      }
+
+      Mail.delete(mailbox);
+      return JSON.stringify(true);
+    `);
+
+    await executeJXA<boolean>(script);
+    return `Deleted mailbox '${mailboxName}'`;
   } catch (error) {
-  console.error("Error deleting mailbox:", error);
-  throw new Error(
-  `Error deleting mailbox: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error deleting mailbox", error);
   }
 }
 
@@ -1058,28 +1092,37 @@ async function renameMailbox(
   newName: string,
 ): Promise<string> {
   try {
-  if (!(await checkMailAccess())) {
-  return "";
-  }
+    if (!(await checkMailAccess())) {
+      return "";
+    }
 
-  const acc = accountName.replace(/"/g, '\\"');
-  const box = mailboxName.replace(/"/g, '\\"');
-  const newBoxName = newName.replace(/"/g, '\\"');
-  const script = `
-tell application "Mail"
-  set theAccount to first account whose name is "${acc}"
-  if theAccount is missing value then error "Account not found"
-  set targetBox to first mailbox of theAccount whose name is "${box}"
-  if targetBox is missing value then error "Mailbox not found"
-  set name of targetBox to "${newBoxName}"
-end tell`;
-  await runAppleScript(script);
-  return `Renamed mailbox '${mailboxName}' to '${newName}'`;
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const escapedNewName = escapeJXAString(newName);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const newName = "${escapedNewName}";
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName);
+      if (!mailbox) {
+        throw new Error("Mailbox not found");
+      }
+
+      mailbox.name = newName;
+      return JSON.stringify(true);
+    `);
+
+    await executeJXA<boolean>(script);
+    return `Renamed mailbox '${mailboxName}' to '${newName}'`;
   } catch (error) {
-  console.error("Error renaming mailbox:", error);
-  throw new Error(
-  `Error renaming mailbox: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error renaming mailbox", error);
   }
 }
 
@@ -1089,34 +1132,51 @@ async function moveMailbox(
   targetParent: string,
 ): Promise<string> {
   try {
-  if (!(await checkMailAccess())) {
-  return "";
-  }
+    if (!(await checkMailAccess())) {
+      return "";
+    }
 
-  const acc = accountName.replace(/"/g, '\\"');
-  const box = mailboxName.replace(/"/g, '\\"');
-  const parent = targetParent.replace(/"/g, '\\"');
-  const script = `
-tell application "Mail"
-  set theAccount to first account whose name is "${acc}"
-  if theAccount is missing value then error "Account not found"
-  set moveBox to first mailbox of theAccount whose name is "${box}"
-  if moveBox is missing value then error "Mailbox not found"
-  ${parent === "" ? "set destBox to theAccount" : `set destBox to first mailbox of theAccount whose name is "${parent}"
-  if destBox is missing value then error "Target mailbox not found"`}
-  move moveBox to destBox
-end tell`;
-  await runAppleScript(script);
-  return `Moved mailbox '${mailboxName}' to '${targetParent}'`;
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const escapedTargetParent = escapeJXAString(targetParent);
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const targetParent = "${escapedTargetParent}";
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const account = accountMatches[0];
+      const mailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName);
+      if (!mailbox) {
+        throw new Error("Mailbox not found");
+      }
+
+      const destination =
+        targetParent.length === 0
+          ? account
+          : findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetParent);
+
+      if (!destination) {
+        throw new Error("Target mailbox not found");
+      }
+
+      Mail.move(mailbox, { to: destination });
+      return JSON.stringify(true);
+    `);
+
+    await executeJXA<boolean>(script);
+    return `Moved mailbox '${mailboxName}' to '${targetParent}'`;
   } catch (error) {
-  console.error("Error moving mailbox:", error);
-  throw new Error(
-  `Error moving mailbox: ${error instanceof Error ? error.message : String(error)}`,
-  );
+    throw toMailError("Error moving mailbox", error);
   }
 }
 
-export default {
+const mail = {
   getUnreadMails,
   searchMails,
   sendMail,
@@ -1133,3 +1193,25 @@ export default {
   renameMailbox,
   moveMailbox,
 };
+
+export {
+  checkMailAccess,
+  createMailbox,
+  deleteMailbox,
+  filterHeaders,
+  getAccountDetails,
+  getAccountMailboxTree,
+  getAccountSummaries,
+  getAccounts,
+  getMailboxProperties,
+  getMailboxes,
+  getMailboxesForAccount,
+  getUnreadMails,
+  listMessages,
+  moveMailbox,
+  renameMailbox,
+  searchMails,
+  sendMail,
+};
+
+export default mail;

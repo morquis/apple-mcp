@@ -1,4 +1,4 @@
-import {runAppleScript} from 'run-applescript';
+import { executeJXA, wrapJXAFunction } from "../core/jxa-bridge.ts";
 import { promisify } from 'node:util';
 import { exec } from 'node:child_process';
 import { access } from 'node:fs/promises';
@@ -60,14 +60,37 @@ function normalizePhoneNumber(phone: string): string[] {
 }
 
 async function sendMessage(phoneNumber: string, message: string) {
-  const escapedMessage = message.replace(/"/g, '\\"');
-  const result = await runAppleScript(`
-tell application "Messages"
-  set targetService to 1st service whose service type = iMessage
-  set targetBuddy to buddy "${phoneNumber}"
-  send "${escapedMessage}" to targetBuddy
-end tell`);
-  return result;
+  const script = wrapJXAFunction(`
+    const Messages = Application("Messages");
+    const phoneNumber = ${JSON.stringify(phoneNumber)};
+    const messageText = ${JSON.stringify(message)};
+
+    const services = Messages.services.whose({
+      serviceType: "iMessage",
+    })();
+    const targetService = services[0];
+
+    if (!targetService) {
+      throw new Error("No iMessage service available");
+    }
+
+    const buddies = targetService.buddies.whose({
+      handle: phoneNumber,
+    })();
+    const targetBuddy = buddies[0];
+
+    if (!targetBuddy) {
+      throw new Error(\`No Messages buddy found for \${phoneNumber}\`);
+    }
+
+    Messages.send(messageText, {
+      to: targetBuddy,
+    });
+
+    return "";
+  `);
+
+  return await executeJXA(script, { parseJSON: false });
 }
 
 interface Message {

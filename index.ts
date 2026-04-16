@@ -5,7 +5,6 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { runAppleScript } from "run-applescript";
 import tools from "./tools";
 
 interface WebSearchArgs {
@@ -468,140 +467,141 @@ function initServer() {
             
             switch (args.operation) {
               case "unread": {
-                // If an account is specified, we'll try to search specifically in that account
                 let emails;
-                if (args.account) {
-                  console.error(`Getting unread emails for account: ${args.account}`);
-                  // Use AppleScript to get unread emails from specific account
-                  const script = `
-tell application "Mail"
-    set resultList to {}
-    try
-        set targetAccount to first account whose name is "${args.account.replace(/"/g, '\\"')}"
-        
-        -- Get mailboxes for this account
-        set acctMailboxes to every mailbox of targetAccount
-        
-        -- If mailbox is specified, only search in that mailbox
-        set mailboxesToSearch to acctMailboxes
-        ${args.mailbox ? `
-        set mailboxesToSearch to {}
-        repeat with mb in acctMailboxes
-            if name of mb is "${args.mailbox.replace(/"/g, '\\"')}" then
-                set mailboxesToSearch to {mb}
-                exit repeat
-            end if
-        end repeat
-        ` : ''}
-        
-        -- Search specified mailboxes
-        repeat with mb in mailboxesToSearch
-            try
-                set unreadMessages to (messages of mb whose read status is false)
-                if (count of unreadMessages) > 0 then
-                    set msgLimit to ${args.limit || 10}
-                    if (count of unreadMessages) < msgLimit then
-                        set msgLimit to (count of unreadMessages)
-                    end if
-                    
-                    repeat with i from 1 to msgLimit
-                        try
-                            set currentMsg to item i of unreadMessages
-                            set msgData to {subject:(subject of currentMsg), sender:(sender of currentMsg), ¬
-                                        date:(date sent of currentMsg) as string, mailbox:(name of mb)}
-                            
-                            -- Try to get content if possible
-                            try
-                                set msgContent to content of currentMsg
-                                if length of msgContent > 500 then
-                                    set msgContent to (text 1 thru 500 of msgContent) & "..."
-                                end if
-                                set msgData to msgData & {content:msgContent}
-                            on error
-                                set msgData to msgData & {content:"[Content not available]"}
-                            end try
-                            
-                            set end of resultList to msgData
-                        on error
-                            -- Skip problematic messages
-                        end try
-                    end repeat
-                    
-                    if (count of resultList) ≥ ${args.limit || 10} then exit repeat
-                end if
-            on error
-                -- Skip problematic mailboxes
-            end try
-        end repeat
-    on error errMsg
-        return "Error: " & errMsg
-    end try
-    
-    return resultList
-end tell`;
-                  
-                  try {
-                    const asResult = await runAppleScript(script);
-                    if (asResult && asResult.startsWith('Error:')) {
-                      throw new Error(asResult);
-                    }
-                    
-                    // Parse the results - similar to general getUnreadMails
-                    const emailData = [];
-                    const matches = asResult.match(/\{([^}]+)\}/g);
-                    if (matches && matches.length > 0) {
-                      for (const match of matches) {
-                        try {
-                          const props = match.substring(1, match.length - 1).split(',');
-                          const email: any = {};
-                          
-                          props.forEach(prop => {
-                            const parts = prop.split(':');
-                            if (parts.length >= 2) {
-                              const key = parts[0].trim();
-                              const value = parts.slice(1).join(':').trim();
-                              email[key] = value;
-                            }
-                          });
-                          
-                          if (email.subject || email.sender) {
-                            emailData.push({
-                              subject: email.subject || "No subject",
-                              sender: email.sender || "Unknown sender",
-                              dateSent: email.date || new Date().toString(),
-                              content: email.content || "[Content not available]",
-                              isRead: false,
-                              mailbox: `${args.account} - ${email.mailbox || "Unknown"}`
-                            });
-                          }
-                        } catch (parseError) {
-                          console.error('Error parsing email match:', parseError);
-                        }
+                if (args.account && args.mailbox) {
+                  // Specific account + mailbox: use listMessages with unreadOnly
+                  emails = await mailModule.listMessages(args.account, args.mailbox, {
+                    limit: args.limit || 10,
+                    unreadOnly: true,
+                    includeHeaders: args.includeHeaders,
+                    headerFilter: args.headerFilter,
+                  });
+                } else {
+                  // All accounts or specific account: single JXA call with .whose({readStatus: false})
+                  emails = await mailModule.getUnreadMails(
+                    args.limit,
+                    args.includeHeaders,
+                    args.headerFilter,
+                    args.account,
+                  );
+                }
+                
+                let textContent = "";
+                if (emails.length > 0) {
+                  if (args.includeHeaders) {
+                    // Detailed format when headers are requested
+                    textContent = emails.map((email: any, index: number) => {
+                      let msgText = `=== Message ${index + 1} ===\n`;
+                      msgText += `From: ${email.sender}\n`;
+                      msgText += `Date: ${email.dateSent}\n`;
+                      msgText += `Subject: ${email.subject}\n`;
+                      msgText += `Mailbox: ${email.mailbox}\n`;
+                      
+                      if (email.messageLink) {
+                        msgText += `Link: ${email.messageLink}\n`;
                       }
-                    }
-                    
-                    emails = emailData;
-                  } catch (error) {
-                    console.error('Error getting account-specific emails:', error);
-                    // Fallback to general method if specific account fails
-                    emails = await mailModule.getUnreadMails(args.limit);
+                      
+                      if (email.content) {
+                        msgText += `\nContent:\n${email.content}\n`;
+                      }
+                      
+                      if (args.includeHeaders && email.headers) {
+                        msgText += `\nHeaders:\n${email.headers}\n`;
+                      }
+                      
+                      return msgText;
+                    }).join("\n\n");
+                  } else {
+                    // Simple format
+                    textContent = `Found ${emails.length} unread email(s)${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}:\n\n` +
+                      emails.map((email: any) => 
+                        `[${email.dateSent}] From: ${email.sender}\nMailbox: ${email.mailbox}\nSubject: ${email.subject}\n${email.content.substring(0, 500)}${email.content.length > 500 ? '...' : ''}`
+                      ).join("\n\n");
                   }
                 } else {
-                  // No account specified, use the general method
-                  emails = await mailModule.getUnreadMails(args.limit);
+                  textContent = `No unread emails found${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}`;
                 }
                 
                 return {
-                  content: [{ 
-                    type: "text", 
-                    text: emails.length > 0 ? 
-                      `Found ${emails.length} unread email(s)${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}:\n\n` +
-                      emails.map((email: any) => 
-                        `[${email.dateSent}] From: ${email.sender}\nMailbox: ${email.mailbox}\nSubject: ${email.subject}\n${email.content.substring(0, 500)}${email.content.length > 500 ? '...' : ''}`
-                      ).join("\n\n") :
-                      `No unread emails found${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}`
-                  }],
+                  content: [{ type: "text", text: textContent }],
+                  emails,
                   isError: false
+                };
+              }
+
+              case "latest": {
+                let emails;
+                const limit = args.limit || 10;
+                if (args.account && args.mailbox) {
+                  emails = await mailModule.listMessages(args.account, args.mailbox, {
+                    limit,
+                    includeHeaders: args.includeHeaders,
+                    headerFilter: args.headerFilter,
+                  });
+                } else if (args.account) {
+                  const mailboxes = await mailModule.getMailboxesForAccount(args.account);
+                  emails = [];
+                  for (const mbName of mailboxes) {
+                    if (emails.length >= limit) break;
+                    const msgs = await mailModule.listMessages(args.account, mbName, {
+                      limit: limit - emails.length,
+                      includeHeaders: args.includeHeaders,
+                      headerFilter: args.headerFilter,
+                    });
+                    emails.push(...msgs);
+                  }
+                } else {
+                  // No account specified — get first account automatically
+                  const accounts = await mailModule.getAccounts();
+                  if (accounts.length === 0) {
+                    return {
+                      content: [{ type: "text", text: "No mail accounts found" }],
+                      isError: true,
+                    };
+                  }
+                  const defaultAccount = accounts[0];
+                  const mailboxes = await mailModule.getMailboxesForAccount(defaultAccount);
+                  emails = [];
+                  for (const mbName of mailboxes) {
+                    if (emails.length >= limit) break;
+                    const msgs = await mailModule.listMessages(defaultAccount, mbName, {
+                      limit: limit - emails.length,
+                      includeHeaders: args.includeHeaders,
+                      headerFilter: args.headerFilter,
+                    });
+                    emails.push(...msgs);
+                  }
+                }
+
+                let textContent = "";
+                if (emails.length > 0) {
+                  textContent = `Found ${emails.length} latest email(s)${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? `, mailbox "${args.mailbox}"` : ''}:\n\n` +
+                    emails.map((email: any, index: number) => {
+                      let msgText = `=== Message ${index + 1} ===\n`;
+                      msgText += `From: ${email.sender}\n`;
+                      msgText += `Date: ${email.dateSent}\n`;
+                      msgText += `Subject: ${email.subject}\n`;
+                      msgText += `Read: ${email.isRead ? 'Yes' : 'No'}\n`;
+                      msgText += `Mailbox: ${email.mailbox}\n`;
+                      if (email.messageLink) {
+                        msgText += `Link: ${email.messageLink}\n`;
+                      }
+                      if (email.content) {
+                        msgText += `\nContent:\n${email.content}\n`;
+                      }
+                      if (args.includeHeaders && email.headers) {
+                        msgText += `\nHeaders:\n${email.headers}\n`;
+                      }
+                      return msgText;
+                    }).join("\n\n");
+                } else {
+                  textContent = `No emails found${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? `, mailbox "${args.mailbox}"` : ''}`;
+                }
+
+                return {
+                  content: [{ type: "text", text: textContent }],
+                  emails,
+                  isError: false,
                 };
               }
 
@@ -609,17 +609,48 @@ end tell`;
                 if (!args.searchTerm) {
                   throw new Error("Search term is required for search operation");
                 }
-                const emails = await mailModule.searchMails(args.searchTerm, args.limit);
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: emails.length > 0 ? 
-                      `Found ${emails.length} email(s) for "${args.searchTerm}"${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}:\n\n` +
+                const emails = await mailModule.searchMails(args.searchTerm, args.limit, args.includeHeaders, args.headerFilter);
+                
+                let textContent = "";
+                if (emails.length > 0) {
+                  if (args.includeHeaders) {
+                    // Detailed format when headers are requested
+                    textContent = emails.map((email: any, index: number) => {
+                      let msgText = `=== Message ${index + 1} ===\n`;
+                      msgText += `From: ${email.sender}\n`;
+                      msgText += `Date: ${email.dateSent}\n`;
+                      msgText += `Subject: ${email.subject}\n`;
+                      msgText += `Read: ${email.isRead ? 'Yes' : 'No'}\n`;
+                      msgText += `Mailbox: ${email.mailbox}\n`;
+                      
+                      if (email.messageLink) {
+                        msgText += `Link: ${email.messageLink}\n`;
+                      }
+                      
+                      if (email.content) {
+                        msgText += `\nContent:\n${email.content}\n`;
+                      }
+                      
+                      if (args.includeHeaders && email.headers) {
+                        msgText += `\nHeaders:\n${email.headers}\n`;
+                      }
+                      
+                      return msgText;
+                    }).join("\n\n");
+                  } else {
+                    // Simple format
+                    textContent = `Found ${emails.length} email(s) for "${args.searchTerm}"${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}:\n\n` +
                       emails.map((email: any) => 
                         `[${email.dateSent}] From: ${email.sender}\nMailbox: ${email.mailbox}\nSubject: ${email.subject}\n${email.content.substring(0, 200)}${email.content.length > 200 ? '...' : ''}`
-                      ).join("\n\n") :
-                      `No emails found for "${args.searchTerm}"${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}`
-                  }],
+                      ).join("\n\n");
+                  }
+                } else {
+                  textContent = `No emails found for "${args.searchTerm}"${args.account ? ` in account "${args.account}"` : ''}${args.mailbox ? ` and mailbox "${args.mailbox}"` : ''}`;
+                }
+                
+                return {
+                  content: [{ type: "text", text: textContent }],
+                  emails,
                   isError: false
                 };
               }
@@ -725,6 +756,9 @@ end tell`;
               }
 
               case "messages": {
+                if (!args.account || !args.mailbox) {
+                  throw new Error("Account and mailbox are required for messages operation");
+                }
                 const opts = {
                   limit: args.limit,
                   unreadOnly: args.unreadOnly,
@@ -732,8 +766,9 @@ end tell`;
                   endDate: args.endDate,
                   includeAttachments: args.includeAttachments,
                   includeHeaders: args.includeHeaders,
+                  headerFilter: args.headerFilter,
                 };
-                const messages = await mailModule.listMessages(args.account!, args.mailbox!, opts);
+                const messages = await mailModule.listMessages(args.account, args.mailbox, opts);
                 
                 let textContent = "";
                 if (messages.length > 0) {
@@ -843,19 +878,36 @@ end tell`;
             const { operation } = args;
 
             if (operation === "list") {
-              // List all reminders
+              if (args.listName) {
+                // List reminders from a specific list
+                const reminders = await remindersModule.getAllReminders(args.listName);
+                return {
+                  content: [{
+                    type: "text",
+                    text: reminders.length > 0
+                      ? `Found ${reminders.length} reminders in "${args.listName}":\n${reminders.map(r =>
+                          `- ${r.name}${r.completed ? ' ✓' : ''}${r.dueDate ? ` (due: ${new Date(r.dueDate).toLocaleDateString()})` : ''}`
+                        ).join("\n")}`
+                      : `No reminders found in "${args.listName}".`
+                  }],
+                  reminders,
+                  isError: false
+                };
+              }
+
+              // List all reminder lists (not all reminders — that's too slow with 200+ reminders)
               const lists = await remindersModule.getAllLists();
-              const allReminders = await remindersModule.getAllReminders();
               return {
                 content: [{
                   type: "text",
-                  text: `Found ${lists.length} lists and ${allReminders.length} reminders.`
+                  text: lists.length > 0
+                    ? `Found ${lists.length} reminder lists:\n${lists.map(l => `- ${l.name} (ID: ${l.id})`).join("\n")}\n\nUse list with listName to see reminders in a specific list.`
+                    : "No reminder lists found."
                 }],
                 lists,
-                reminders: allReminders,
                 isError: false
               };
-            } 
+            }
             else if (operation === "search") {
               // Search for reminders
               const { searchText } = args;
@@ -965,8 +1017,8 @@ end tell`;
             
             switch (operation) {
               case "search": {
-                const { searchText, limit, fromDate, toDate } = args;
-                const events = await calendarModule.searchEvents(searchText!, limit, fromDate, toDate);
+                const { searchText, limit, fromDate, toDate, calendarName } = args;
+                const events = await calendarModule.searchEvents(searchText!, limit, fromDate, toDate, calendarName);
                 
                 return {
                   content: [{
@@ -1001,8 +1053,8 @@ end tell`;
               }
               
               case "list": {
-                const { limit, fromDate, toDate } = args;
-                const events = await calendarModule.getEvents(limit, fromDate, toDate);
+                const { limit, fromDate, toDate, calendarName } = args;
+                const events = await calendarModule.getEvents(limit, fromDate, toDate, calendarName);
                 
                 const startDateText = fromDate ? new Date(fromDate).toLocaleDateString() : 'today';
                 const endDateText = toDate ? new Date(toDate).toLocaleDateString() : 'next 7 days';
@@ -1428,6 +1480,7 @@ function isMessagesArgs(args: unknown): args is {
 function isMailArgs(args: unknown): args is {
   operation:
     | "unread"
+    | "latest"
     | "search"
     | "send"
     | "mailboxes"
@@ -1459,6 +1512,7 @@ function isMailArgs(args: unknown): args is {
   bcc?: string;
   includeAttachments?: boolean;
   includeHeaders?: boolean;
+  headerFilter?: string[];
 } {
   if (typeof args !== "object" || args === null) return false;
 
@@ -1482,10 +1536,12 @@ function isMailArgs(args: unknown): args is {
     bcc,
     includeAttachments,
     includeHeaders,
+    headerFilter,
   } = args as any;
 
   if (!operation || ![
     "unread",
+    "latest",
     "search",
     "send",
     "mailboxes",
@@ -1560,6 +1616,7 @@ function isMailArgs(args: unknown): args is {
   if (bcc && typeof bcc !== "string") return false;
   if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
   if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
+  if (headerFilter !== undefined && (!Array.isArray(headerFilter) || !headerFilter.every(h => typeof h === "string"))) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;
   if (newName && typeof newName !== "string") return false;
