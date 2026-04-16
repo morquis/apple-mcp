@@ -227,45 +227,204 @@ function initServer() {
 
           try {
             const contactsModule = await loadModule('contacts');
-            
-            if (args.name) {
-              const numbers = await contactsModule.findNumber(args.name);
-              return {
-                content: [{
-                  type: "text",
-                  text: numbers.length ? 
-                    `${args.name}: ${numbers.join(", ")}` :
-                    `No contact found for "${args.name}". Try a different name or use no name parameter to list all contacts.`
-                }],
-                isError: false
-              };
-            } else {
-              const allNumbers = await contactsModule.getAllNumbers();
-              const contactCount = Object.keys(allNumbers).length;
-              
-              if (contactCount === 0) {
+            const operation = args.operation ?? "search";
+
+            // Helper: normalize string|array multi-value fields for update
+            function normalizeFields(input: string | Array<{ label: string; value: string }> | undefined): Array<{ label: string; value: string }> | undefined {
+              if (input === undefined || input === null) return undefined;
+              if (typeof input === "string") return [{ label: "work", value: input }];
+              return input;
+            }
+
+            // Helper: format a ContactRecord into readable text
+            function formatContactRecord(contact: { id: string; firstName: string; lastName?: string; organization?: string; jobTitle?: string; department?: string; birthday?: string; note?: string; phones: Array<{ label: string; value: string }>; emails: Array<{ label: string; value: string }>; urls: Array<{ label: string; value: string }>; addresses: Array<{ label: string; street?: string; city?: string; zip?: string; state?: string; country?: string }> }): string {
+              const parts: string[] = [];
+              const fullName = contact.lastName ? `${contact.firstName} ${contact.lastName}` : contact.firstName;
+              parts.push(`${fullName} (ID: ${contact.id})`);
+              if (contact.organization) parts.push(`Organization: ${contact.organization}`);
+              if (contact.jobTitle) parts.push(`Job Title: ${contact.jobTitle}`);
+              if (contact.department) parts.push(`Department: ${contact.department}`);
+              if (contact.birthday) parts.push(`Birthday: ${contact.birthday}`);
+              if (contact.phones.length > 0) {
+                parts.push(`Phones: ${contact.phones.map(p => `${p.label}: ${p.value}`).join(", ")}`);
+              }
+              if (contact.emails.length > 0) {
+                parts.push(`Emails: ${contact.emails.map(e => `${e.label}: ${e.value}`).join(", ")}`);
+              }
+              if (contact.urls.length > 0) {
+                parts.push(`URLs: ${contact.urls.map(u => `${u.label}: ${u.value}`).join(", ")}`);
+              }
+              if (contact.addresses.length > 0) {
+                parts.push(`Addresses: ${contact.addresses.map(a => {
+                  const addrParts: string[] = [];
+                  if (a.street) addrParts.push(a.street);
+                  if (a.zip && a.city) addrParts.push(`${a.zip} ${a.city}`);
+                  else if (a.city) addrParts.push(a.city);
+                  else if (a.zip) addrParts.push(a.zip);
+                  if (a.state) addrParts.push(a.state);
+                  if (a.country) addrParts.push(a.country);
+                  return `${a.label}: ${addrParts.join(", ")}`;
+                }).join("; ")}`);
+              }
+              if (contact.note) parts.push(`Note: ${contact.note}`);
+              return parts.join("\n");
+            }
+
+            switch (operation) {
+              case "create": {
+                if (!args.firstName) {
+                  throw new Error("firstName is required for create operation");
+                }
+
+                const result = await contactsModule.createContact({
+                  firstName: args.firstName,
+                  lastName: args.lastName,
+                  phones: args.phones ?? args.phone,
+                  emails: args.emails ?? args.email,
+                  urls: args.urls ?? args.url,
+                  organization: args.organization,
+                  jobTitle: args.jobTitle,
+                  department: args.department,
+                  birthday: args.birthday,
+                  note: args.note,
+                  addresses: args.addresses ?? (args.address ? [{ label: "work", ...args.address }] : undefined),
+                });
+
+                if (result.success && result.contact) {
+                  return {
+                    content: [{
+                      type: "text",
+                      text: `Created contact ${formatContactRecord(result.contact)}`
+                    }],
+                    isError: false
+                  };
+                }
+
                 return {
                   content: [{
                     type: "text",
-                    text: "No contacts found in the address book. Please make sure you have granted access to Contacts."
+                    text: `Failed to create contact: ${result.error ?? "unknown error"}`
+                  }],
+                  isError: true
+                };
+              }
+
+              case "update": {
+                if (!args.id) {
+                  throw new Error("id is required for update operation");
+                }
+
+                const result = await contactsModule.updateContact({
+                  id: args.id,
+                  firstName: args.firstName,
+                  lastName: args.lastName,
+                  phones: normalizeFields(args.phones ?? args.phone),
+                  emails: normalizeFields(args.emails ?? args.email),
+                  urls: normalizeFields(args.urls ?? args.url),
+                  organization: args.organization,
+                  jobTitle: args.jobTitle,
+                  department: args.department,
+                  birthday: args.birthday,
+                  note: args.note,
+                  addresses: args.addresses ?? (args.address ? [{ label: "work", ...args.address }] : undefined),
+                });
+
+                if (result.success && result.contact) {
+                  return {
+                    content: [{
+                      type: "text",
+                      text: `Updated contact ${formatContactRecord(result.contact)}`
+                    }],
+                    isError: false
+                  };
+                }
+
+                return {
+                  content: [{
+                    type: "text",
+                    text: `Failed to update contact: ${result.error ?? "unknown error"}`
+                  }],
+                  isError: true
+                };
+              }
+
+              case "delete": {
+                if (!args.id) {
+                  throw new Error("id is required for delete operation");
+                }
+
+                const result = await contactsModule.deleteContact(args.id);
+                return {
+                  content: [{
+                    type: "text",
+                    text: result.success ? "Contact deleted" : `Failed to delete contact: ${result.error ?? "unknown error"}`
+                  }],
+                  isError: !result.success
+                };
+              }
+
+              case "search":
+              default: {
+                // If name, email, or phone specified, use searchContacts for rich results
+                if (args.name || args.email || args.phone) {
+                  const contacts = await contactsModule.searchContacts({
+                    name: args.name,
+                    email: args.email,
+                    phone: args.phone,
+                  });
+
+                  if (contacts.length === 0) {
+                    const searchTerms: string[] = [];
+                    if (args.name) searchTerms.push(`name "${args.name}"`);
+                    if (args.email) searchTerms.push(`email "${args.email}"`);
+                    if (args.phone) searchTerms.push(`phone "${args.phone}"`);
+                    return {
+                      content: [{
+                        type: "text",
+                        text: `No contacts found matching ${searchTerms.join(", ")}. Try a different search term or use no parameters to list all contacts.`
+                      }],
+                      isError: false
+                    };
+                  }
+
+                  const formatted = contacts.map(c => formatContactRecord(c));
+                  return {
+                    content: [{
+                      type: "text",
+                      text: `Found ${contacts.length} contact${contacts.length === 1 ? "" : "s"}:\n\n${formatted.join("\n\n---\n\n")}`
+                    }],
+                    isError: false
+                  };
+                }
+
+                // No search criteria: list all (existing behavior)
+                const allNumbers = await contactsModule.getAllNumbers();
+                const contactCount = Object.keys(allNumbers).length;
+
+                if (contactCount === 0) {
+                  return {
+                    content: [{
+                      type: "text",
+                      text: "No contacts found in the address book. Please make sure you have granted access to Contacts."
+                    }],
+                    isError: false
+                  };
+                }
+
+                const formattedContacts = Object.entries(allNumbers)
+                  .filter(([_, phones]) => phones.length > 0)
+                  .map(([name, phones]) => `${name}: ${phones.join(", ")}`);
+
+                return {
+                  content: [{
+                    type: "text",
+                    text: formattedContacts.length > 0 ?
+                      `Found ${contactCount} contacts:\n\n${formattedContacts.join("\n")}` :
+                      "Found contacts but none have phone numbers. Try searching by name to see more details."
                   }],
                   isError: false
                 };
               }
-
-              const formattedContacts = Object.entries(allNumbers)
-                .filter(([_, phones]) => phones.length > 0)
-                .map(([name, phones]) => `${name}: ${phones.join(", ")}`);
-
-              return {
-                content: [{
-                  type: "text",
-                  text: formattedContacts.length > 0 ?
-                    `Found ${contactCount} contacts:\n\n${formattedContacts.join("\n")}` :
-                    "Found contacts but none have phone numbers. Try searching by name to see more details."
-                }],
-                isError: false
-              };
             }
           } catch (error) {
             return {
@@ -1385,12 +1544,72 @@ function initServer() {
 }
 
 // Helper functions for argument type checking
-function isContactsArgs(args: unknown): args is { name?: string } {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    (!("name" in args) || typeof (args as { name: string }).name === "string")
-  );
+function isContactsArgs(args: unknown): args is {
+  operation?: "search" | "create" | "update" | "delete";
+  name?: string;
+  id?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  phones?: string | Array<{ label: string; value: string }>;
+  emails?: string | Array<{ label: string; value: string }>;
+  urls?: string | Array<{ label: string; value: string }>;
+  organization?: string;
+  jobTitle?: string;
+  department?: string;
+  birthday?: string;
+  note?: string;
+  url?: string;
+  address?: {
+    street?: string;
+    city?: string;
+    zip?: string;
+    state?: string;
+    country?: string;
+  };
+  addresses?: Array<{
+    label?: string;
+    street?: string;
+    city?: string;
+    zip?: string;
+    state?: string;
+    country?: string;
+  }>;
+} {
+  if (typeof args !== "object" || args === null) {
+    return false;
+  }
+
+  const a = args as Record<string, unknown>;
+
+  if ("operation" in a && !["search", "create", "update", "delete"].includes(a.operation as string)) {
+    return false;
+  }
+
+  const stringFields = ["name", "id", "firstName", "lastName", "email", "phone", "organization", "jobTitle", "department", "birthday", "note", "url"];
+  for (const field of stringFields) {
+    if (field in a && typeof a[field] !== "string") {
+      return false;
+    }
+  }
+
+  // phones/emails/urls can be string or array
+  for (const field of ["phones", "emails", "urls"]) {
+    if (field in a && typeof a[field] !== "string" && !Array.isArray(a[field])) {
+      return false;
+    }
+  }
+
+  if ("address" in a && (typeof a.address !== "object" || a.address === null)) {
+    return false;
+  }
+
+  if ("addresses" in a && !Array.isArray(a.addresses)) {
+    return false;
+  }
+
+  return true;
 }
 
 function isNotesArgs(args: unknown): args is { 

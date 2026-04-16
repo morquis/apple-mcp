@@ -2,15 +2,130 @@ import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 
 const CONTACTS_TOOL: Tool = {
     name: "contacts",
-    description: "Search and retrieve contacts from Apple Contacts app",
+    description: "Search, create, update, and delete contacts in Apple Contacts. Search returns full contact details including ID for follow-up operations.",
     inputSchema: {
       type: "object",
       properties: {
+        operation: {
+          type: "string",
+          description: "Operation to perform",
+          enum: ["search", "create", "update", "delete"]
+        },
+        // Search fields
         name: {
           type: "string",
-          description: "Name to search for (optional - if not provided, returns all contacts). Can be partial name to search."
+          description: "Name to search for (partial match). Used with search operation."
+        },
+        // Create/Update fields
+        id: {
+          type: "string",
+          description: "Contact ID (required for update and delete operations, returned by search and create)"
+        },
+        firstName: {
+          type: "string",
+          description: "First name (required for create)"
+        },
+        lastName: {
+          type: "string",
+          description: "Last name"
+        },
+        phones: {
+          oneOf: [
+            { type: "string", description: "Single phone number (labeled as 'work')" },
+            {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Label: work, home, mobile, iPhone, main, other" },
+                  value: { type: "string", description: "Phone number" }
+                },
+                required: ["label", "value"]
+              }
+            }
+          ],
+          description: "Phone number(s). String for single work number, or array of {label, value} for multiple."
+        },
+        emails: {
+          oneOf: [
+            { type: "string", description: "Single email (labeled as 'work')" },
+            {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Label: work, home, other" },
+                  value: { type: "string", description: "Email address" }
+                },
+                required: ["label", "value"]
+              }
+            }
+          ],
+          description: "Email address(es). String for single work email, or array of {label, value} for multiple."
+        },
+        urls: {
+          oneOf: [
+            { type: "string", description: "Single URL (labeled as 'work')" },
+            {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Label: work, home, other" },
+                  value: { type: "string", description: "URL" }
+                },
+                required: ["label", "value"]
+              }
+            }
+          ],
+          description: "URL(s). String for single work URL, or array of {label, value} for multiple."
+        },
+        organization: { type: "string", description: "Organization/company name" },
+        jobTitle: { type: "string", description: "Job title" },
+        department: { type: "string", description: "Department" },
+        birthday: { type: "string", description: "Birthday in ISO date format (YYYY-MM-DD)" },
+        note: { type: "string", description: "Notes" },
+        addresses: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Label: work, home, other" },
+              street: { type: "string" },
+              city: { type: "string" },
+              zip: { type: "string" },
+              state: { type: "string" },
+              country: { type: "string" }
+            }
+          },
+          description: "Postal addresses with labels"
+        },
+        // Deprecated fields — kept for backwards compatibility
+        phone: {
+          type: "string",
+          description: "Deprecated: use 'phones' instead. Single phone number (also used for search)."
+        },
+        email: {
+          type: "string",
+          description: "Deprecated: use 'emails' instead. Single email address (also used for search)."
+        },
+        url: {
+          type: "string",
+          description: "Deprecated: use 'urls' instead. Single URL."
+        },
+        address: {
+          type: "object",
+          description: "Deprecated: use 'addresses' instead. Single address.",
+          properties: {
+            street: { type: "string", description: "Street address" },
+            city: { type: "string", description: "City" },
+            zip: { type: "string", description: "ZIP/postal code" },
+            state: { type: "string", description: "State/province" },
+            country: { type: "string", description: "Country" }
+          }
         }
-      }
+      },
+      required: ["operation"]
     }
   };
   
