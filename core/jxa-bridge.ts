@@ -120,11 +120,11 @@ export class JXAAppNotRunningError extends JXAExecutionError {
   }
 }
 
-export async function executeJXA<T = unknown>(
+export function executeJXA<T = unknown>(
   script: string,
-  options: JXAExecutionOptions & { parseJSON?: true } = {},
+  options?: JXAExecutionOptions & { parseJSON?: true },
 ): Promise<T>;
-export async function executeJXA(
+export function executeJXA(
   script: string,
   options: JXAExecutionOptions & { parseJSON: false },
 ): Promise<string>;

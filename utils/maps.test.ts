@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 let importCounter = 0;
 
 async function importMaps() {
   importCounter += 1;
-  return await import(`./maps.ts?test=${importCounter}`);
+  return await import(`./maps.js?test=${importCounter}`);
 }
 
 describe("maps", () => {

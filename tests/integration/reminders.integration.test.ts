@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
 
-import reminders from "../../utils/reminders.ts";
-import { createReminderList, deleteReminderListByName } from "./helpers/cleanup-jxa.ts";
+import reminders from "../../utils/reminders.js";
+import { createReminderList, deleteReminderListByName } from "./helpers/cleanup-jxa.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
   INTEGRATION_TIMEOUT_LONG,
   uniqueName,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 const testListName = uniqueName("list");
 

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 let importCounter = 0;
 
 async function importMail() {
   importCounter += 1;
-  return await import(`./mail.ts?test=${importCounter}`);
+  return await import(`./mail.js?test=${importCounter}`);
 }
 
 describe("mail", () => {

@@ -1,13 +1,13 @@
 import { afterEach, expect, it } from "bun:test";
 
-import notes from "../../utils/notes.ts";
-import { CleanupTracker } from "./helpers/cleanup-tracker.ts";
-import { deleteNoteByName, deleteNotesFolderByName } from "./helpers/cleanup-jxa.ts";
+import notes from "../../utils/notes.js";
+import { CleanupTracker } from "./helpers/cleanup-tracker.js";
+import { deleteNoteByName, deleteNotesFolderByName } from "./helpers/cleanup-jxa.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
   uniqueName,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 const cleanup = new CleanupTracker();
 

@@ -4,11 +4,11 @@ import {
   executeJXA,
   JXAExecutionError,
   wrapJXAFunction,
-} from "../../core/jxa-bridge.ts";
+} from "../../core/jxa-bridge.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 integrationDescribe("jxa-bridge integration", () => {
   it("executes a simple JXA script and parses JSON", async () => {

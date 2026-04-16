@@ -3,7 +3,7 @@ import {
   JXAAppNotRunningError,
   JXAExecutionError,
   wrapJXAFunction,
-} from "../core/jxa-bridge.ts";
+} from "../core/jxa-bridge.js";
 
 interface TrackItem {
   id: string;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 describe("reminders", () => {
   afterEach(() => {
@@ -14,7 +14,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.getAllLists();
 
     expect(result).toEqual([{ name: "Inbox", id: "list-1" }]);
@@ -28,7 +28,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.getRemindersFromListById('list"1', ['name', 'due"Date']);
 
     expect(result).toEqual([{ name: "Task", dueDate: null }]);
@@ -52,7 +52,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.getAllReminders('Home"Tasks');
 
     expect(result).toEqual([
@@ -84,7 +84,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.searchReminders('Plan "trip"\nsoon');
 
     expect(result).toEqual([
@@ -114,7 +114,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.createReminder(
       'Review "PR"',
       'Work"Queue',
@@ -155,7 +155,7 @@ describe("reminders", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const reminders = (await import("./reminders.ts")).default;
+    const reminders = (await import("./reminders.js")).default;
     const result = await reminders.openReminder("Buy milk");
 
     expect(result).toEqual({

@@ -4,7 +4,7 @@ import {
   JXAConverters,
   JXAExecutionError,
   wrapJXAFunction,
-} from "../core/jxa-bridge.ts";
+} from "../core/jxa-bridge.js";
 
 type Note = {
   name: string;

@@ -1,13 +1,13 @@
 import { afterEach, expect, it } from "bun:test";
 
-import mail from "../../utils/mail.ts";
-import { CleanupTracker } from "./helpers/cleanup-tracker.ts";
+import mail from "../../utils/mail.js";
+import { CleanupTracker } from "./helpers/cleanup-tracker.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
   INTEGRATION_TIMEOUT_LONG,
   uniqueName,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 const cleanup = new CleanupTracker();
 let firstAccount: string | null = null;

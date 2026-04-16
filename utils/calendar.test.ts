@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 let importCounter = 0;
 
 async function importCalendar() {
   importCounter += 1;
-  return (await import(`./calendar.ts?test=${importCounter}`)).default;
+  return (await import(`./calendar.js?test=${importCounter}`)).default;
 }
 
 describe("calendar", () => {

@@ -1,14 +1,14 @@
 import { afterEach, expect, it } from "bun:test";
 
-import calendar from "../../utils/calendar.ts";
-import { CleanupTracker } from "./helpers/cleanup-tracker.ts";
-import { deleteCalendarEventByTitle } from "./helpers/cleanup-jxa.ts";
+import calendar from "../../utils/calendar.js";
+import { CleanupTracker } from "./helpers/cleanup-tracker.js";
+import { deleteCalendarEventByTitle } from "./helpers/cleanup-jxa.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
   INTEGRATION_TIMEOUT_LONG,
   uniqueName,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 const cleanup = new CleanupTracker();
 

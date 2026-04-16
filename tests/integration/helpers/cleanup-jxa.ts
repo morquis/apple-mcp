@@ -1,7 +1,7 @@
 import {
   executeJXA,
   wrapJXAFunction,
-} from "../../../core/jxa-bridge.ts";
+} from "../../../core/jxa-bridge.js";
 
 function escapeJXA(value: string): string {
   return value

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 describe("contacts", () => {
   afterEach(() => {
@@ -16,7 +16,7 @@ describe("contacts", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const contacts = (await import("./contacts.ts")).default;
+    const contacts = (await import("./contacts.js")).default;
     const result = await contacts.getAllNumbers();
 
     expect(result).toEqual({ Alice: ["+15551234567"] });
@@ -32,7 +32,7 @@ describe("contacts", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const contacts = (await import("./contacts.ts")).default;
+    const contacts = (await import("./contacts.js")).default;
     const result = await contacts.findNumber('Ali"ce');
 
     expect(result).toEqual(["+15551234567"]);
@@ -48,7 +48,7 @@ describe("contacts", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const contacts = (await import("./contacts.ts")).default;
+    const contacts = (await import("./contacts.js")).default;
     const result = await contacts.findContactByPhone("(555) 123-4567");
 
     expect(result).toBe("Alice");
@@ -62,7 +62,7 @@ describe("contacts", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const contacts = (await import("./contacts.ts")).default;
+    const contacts = (await import("./contacts.js")).default;
     const result = await contacts.findContactByPhone("+15551234567");
 
     expect(result).toBeNull();

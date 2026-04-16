@@ -1,11 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import tools from "./tools";
+import tools from "./tools.js";
 
 interface WebSearchArgs {
   query: string;
@@ -19,29 +19,29 @@ let safeModeFallback = false;
 console.error("Starting apple-mcp server...");
 
 // Placeholders for modules - will either be loaded eagerly or lazily
-let contacts: typeof import('./utils/contacts').default | null = null;
-let notes: typeof import('./utils/notes').default | null = null;
-let message: typeof import('./utils/message').default | null = null;
-let mail: typeof import('./utils/mail').default | null = null;
-let reminders: typeof import('./utils/reminders').default | null = null;
-let webSearch: typeof import('./utils/webSearch').default | null = null;
-let calendar: typeof import('./utils/calendar').default | null = null;
-let maps: typeof import('./utils/maps').default | null = null;
-let photos: typeof import('./utils/photos').default | null = null;
-let music: typeof import('./utils/music').default | null = null;
+let contacts: typeof import('./utils/contacts.js').default | null = null;
+let notes: typeof import('./utils/notes.js').default | null = null;
+let message: typeof import('./utils/message.js').default | null = null;
+let mail: typeof import('./utils/mail.js').default | null = null;
+let reminders: typeof import('./utils/reminders.js').default | null = null;
+let webSearch: typeof import('./utils/webSearch.js').default | null = null;
+let calendar: typeof import('./utils/calendar.js').default | null = null;
+let maps: typeof import('./utils/maps.js').default | null = null;
+let photos: typeof import('./utils/photos.js').default | null = null;
+let music: typeof import('./utils/music.js').default | null = null;
 
 // Type map for module names to their types
 type ModuleMap = {
-  contacts: typeof import('./utils/contacts').default;
-  notes: typeof import('./utils/notes').default;
-  message: typeof import('./utils/message').default;
-  mail: typeof import('./utils/mail').default;
-  reminders: typeof import('./utils/reminders').default;
-  webSearch: typeof import('./utils/webSearch').default;
-  calendar: typeof import('./utils/calendar').default;
-  maps: typeof import('./utils/maps').default;
-  photos: typeof import('./utils/photos').default;
-  music: typeof import('./utils/music').default;
+  contacts: typeof import('./utils/contacts.js').default;
+  notes: typeof import('./utils/notes.js').default;
+  message: typeof import('./utils/message.js').default;
+  mail: typeof import('./utils/mail.js').default;
+  reminders: typeof import('./utils/reminders.js').default;
+  webSearch: typeof import('./utils/webSearch.js').default;
+  calendar: typeof import('./utils/calendar.js').default;
+  maps: typeof import('./utils/maps.js').default;
+  photos: typeof import('./utils/photos.js').default;
+  music: typeof import('./utils/music.js').default;
 };
 
 // Helper function for lazy module loading
@@ -53,34 +53,34 @@ async function loadModule<T extends 'contacts' | 'notes' | 'message' | 'mail' | 
   try {
     switch (moduleName) {
       case 'contacts':
-        if (!contacts) contacts = (await import('./utils/contacts')).default;
+        if (!contacts) contacts = (await import('./utils/contacts.js')).default;
         return contacts as ModuleMap[T];
       case 'notes':
-        if (!notes) notes = (await import('./utils/notes')).default;
+        if (!notes) notes = (await import('./utils/notes.js')).default;
         return notes as ModuleMap[T];
       case 'message':
-        if (!message) message = (await import('./utils/message')).default;
+        if (!message) message = (await import('./utils/message.js')).default;
         return message as ModuleMap[T];
       case 'mail':
-        if (!mail) mail = (await import('./utils/mail')).default;
+        if (!mail) mail = (await import('./utils/mail.js')).default;
         return mail as ModuleMap[T];
       case 'reminders':
-        if (!reminders) reminders = (await import('./utils/reminders')).default;
+        if (!reminders) reminders = (await import('./utils/reminders.js')).default;
         return reminders as ModuleMap[T];
       case 'webSearch':
-        if (!webSearch) webSearch = (await import('./utils/webSearch')).default;
+        if (!webSearch) webSearch = (await import('./utils/webSearch.js')).default;
         return webSearch as ModuleMap[T];
       case 'calendar':
-        if (!calendar) calendar = (await import('./utils/calendar')).default;
+        if (!calendar) calendar = (await import('./utils/calendar.js')).default;
         return calendar as ModuleMap[T];
       case 'maps':
-        if (!maps) maps = (await import('./utils/maps')).default;
+        if (!maps) maps = (await import('./utils/maps.js')).default;
         return maps as ModuleMap[T];
       case 'photos':
-        if (!photos) photos = (await import('./utils/photos')).default;
+        if (!photos) photos = (await import('./utils/photos.js')).default;
         return photos as ModuleMap[T];
       case 'music':
-        if (!music) music = (await import('./utils/music')).default;
+        if (!music) music = (await import('./utils/music.js')).default;
         return music as ModuleMap[T];
       default:
         throw new Error(`Unknown module: ${moduleName}`);
@@ -116,34 +116,34 @@ async function attemptEagerLoading() {
     console.error("Attempting to eagerly load modules...");
     
     // Try to import all modules
-    contacts = (await import('./utils/contacts')).default;
+    contacts = (await import('./utils/contacts.js')).default;
     console.error("- Contacts module loaded successfully");
     
-    notes = (await import('./utils/notes')).default;
+    notes = (await import('./utils/notes.js')).default;
     console.error("- Notes module loaded successfully");
     
-    message = (await import('./utils/message')).default;
+    message = (await import('./utils/message.js')).default;
     console.error("- Message module loaded successfully");
     
-    mail = (await import('./utils/mail')).default;
+    mail = (await import('./utils/mail.js')).default;
     console.error("- Mail module loaded successfully");
     
-    reminders = (await import('./utils/reminders')).default;
+    reminders = (await import('./utils/reminders.js')).default;
     console.error("- Reminders module loaded successfully");
 
-    webSearch = (await import('./utils/webSearch')).default;
+    webSearch = (await import('./utils/webSearch.js')).default;
     console.error("- WebSearch module loaded successfully");
 
-    calendar = (await import('./utils/calendar')).default;
+    calendar = (await import('./utils/calendar.js')).default;
     console.error("- Calendar module loaded successfully");
 
-    maps = (await import('./utils/maps')).default;
+    maps = (await import('./utils/maps.js')).default;
     console.error("- Maps module loaded successfully");
 
-    photos = (await import('./utils/photos')).default;
+    photos = (await import('./utils/photos.js')).default;
     console.error("- Photos module loaded successfully");
 
-    music = (await import('./utils/music')).default;
+    music = (await import('./utils/music.js')).default;
     console.error("- Music module loaded successfully");
     
     // If we get here, clear the timeout and proceed with eager loading

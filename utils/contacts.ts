@@ -2,7 +2,7 @@ import {
   executeJXA,
   JXAConverters,
   wrapJXAFunction,
-} from "../core/jxa-bridge.ts";
+} from "../core/jxa-bridge.js";
 
 function escapeJXAString(value: string): string {
   return value
@@ -133,33 +133,33 @@ function buildReadContactJXA(personVarName: string): string {
     } catch(e) {}
     try {
       var phs = p.phones();
-      for (var i = 0; i < phs.length; i++) {
-        try { record.phones.push({ label: String(phs[i].label()), value: String(phs[i].value()) }); } catch(e) {}
+      for (var ph = 0; ph < phs.length; ph++) {
+        try { record.phones.push({ label: String(phs[ph].label()), value: String(phs[ph].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
       var ems = p.emails();
-      for (var i = 0; i < ems.length; i++) {
-        try { record.emails.push({ label: String(ems[i].label()), value: String(ems[i].value()) }); } catch(e) {}
+      for (var em = 0; em < ems.length; em++) {
+        try { record.emails.push({ label: String(ems[em].label()), value: String(ems[em].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
       var us = p.urls();
-      for (var i = 0; i < us.length; i++) {
-        try { record.urls.push({ label: String(us[i].label()), value: String(us[i].value()) }); } catch(e) {}
+      for (var ur = 0; ur < us.length; ur++) {
+        try { record.urls.push({ label: String(us[ur].label()), value: String(us[ur].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
       var addrs = p.addresses();
-      for (var i = 0; i < addrs.length; i++) {
+      for (var ad = 0; ad < addrs.length; ad++) {
         try {
           var a = {};
-          a.label = String(addrs[i].label());
-          try { var v = addrs[i].street(); if (v) a.street = String(v); } catch(e2) {}
-          try { var v = addrs[i].city(); if (v) a.city = String(v); } catch(e2) {}
-          try { var v = addrs[i].zip(); if (v) a.zip = String(v); } catch(e2) {}
-          try { var v = addrs[i].state(); if (v) a.state = String(v); } catch(e2) {}
-          try { var v = addrs[i].country(); if (v) a.country = String(v); } catch(e2) {}
+          a.label = String(addrs[ad].label());
+          try { var v = addrs[ad].street(); if (v) a.street = String(v); } catch(e2) {}
+          try { var v = addrs[ad].city(); if (v) a.city = String(v); } catch(e2) {}
+          try { var v = addrs[ad].zip(); if (v) a.zip = String(v); } catch(e2) {}
+          try { var v = addrs[ad].state(); if (v) a.state = String(v); } catch(e2) {}
+          try { var v = addrs[ad].country(); if (v) a.country = String(v); } catch(e2) {}
           record.addresses.push(a);
         } catch(e) {}
       }

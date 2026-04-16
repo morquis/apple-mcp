@@ -6,7 +6,7 @@ import {
   JXAConverters,
   JXAExecutionError,
   wrapJXAFunction,
-} from "./jxa-bridge.ts";
+} from "./jxa-bridge.js";
 
 describe("executeJXA", () => {
   it("returns raw stdout when parseJSON is false", async () => {

@@ -24,7 +24,7 @@
   },
   "scripts": {
     "dev": "bun run index.ts",
-    "build": "bun build index.ts --outfile=dist/index.js --target=node --minify",
+    "build": "tsc",
     "start": "node dist/index.js",
     "lint": "bun x eslint . --ext .ts",
     "test": "bun test utils/ core/ tests/basic.test.ts tests/mail-header-filter.test.ts",

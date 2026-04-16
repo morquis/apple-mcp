@@ -1,11 +1,11 @@
 import { expect, it } from "bun:test";
 
-import contacts from "../../utils/contacts.ts";
+import contacts from "../../utils/contacts.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
   INTEGRATION_TIMEOUT_LONG,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 /**
  * Note: getAllNumbers and findContactByPhone iterate all contacts (3000+),

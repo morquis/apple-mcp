@@ -2,13 +2,13 @@
 
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 let importCounter = 0;
 
 async function importMessage() {
   importCounter += 1;
-  return (await import(`./message.ts?test=${importCounter}`)).default;
+  return (await import(`./message.js?test=${importCounter}`)).default;
 }
 
 describe("message", () => {

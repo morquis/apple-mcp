@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 let importCounter = 0;
 
 async function importMusic() {
   importCounter += 1;
-  return await import(`./music.ts?test=${importCounter}`);
+  return await import(`./music.js?test=${importCounter}`);
 }
 
 describe("music", () => {

@@ -2,7 +2,7 @@ import {
   executeJXA,
   JXAConverters,
   wrapJXAFunction,
-} from "../core/jxa-bridge.ts";
+} from "../core/jxa-bridge.js";
 
 // Define types for our reminders
 interface ReminderList {

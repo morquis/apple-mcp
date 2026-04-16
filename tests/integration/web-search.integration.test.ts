@@ -1,10 +1,10 @@
 import { expect, it } from "bun:test";
 
-import webSearch from "../../utils/webSearch.ts";
+import webSearch from "../../utils/webSearch.js";
 import {
   integrationDescribe,
   INTEGRATION_TIMEOUT,
-} from "./helpers/test-config.ts";
+} from "./helpers/test-config.js";
 
 integrationDescribe("web-search integration", () => {
   it("webSearch returns results for a common query", async () => {

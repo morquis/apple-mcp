@@ -4,7 +4,7 @@ import {
   JXAConverters,
   JXAExecutionError,
   wrapJXAFunction,
-} from "../core/jxa-bridge.ts";
+} from "../core/jxa-bridge.js";
 
 function escapeJXAString(value: string): string {
   return value

@@ -1,6 +1,6 @@
 import { describe, expect, it, mock, spyOn } from "bun:test";
 
-import * as jxaBridge from "../core/jxa-bridge.ts";
+import * as jxaBridge from "../core/jxa-bridge.js";
 
 describe("notes", () => {
   it("getAllNotes returns an array", async () => {
@@ -10,7 +10,7 @@ describe("notes", () => {
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
-    const notes = (await import("./notes.ts")).default;
+    const notes = (await import("./notes.js")).default;
     const result = await notes.getAllNotes();
 
     expect(Array.isArray(result)).toBe(true);

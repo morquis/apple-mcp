@@ -1,4 +1,4 @@
-import { executeJXA, wrapJXAFunction } from "../core/jxa-bridge.ts";
+import { executeJXA, wrapJXAFunction } from "../core/jxa-bridge.js";
 import Database from "better-sqlite3";
 import { homedir } from "node:os";
 import path from "node:path";
