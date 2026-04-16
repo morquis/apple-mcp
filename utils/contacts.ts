@@ -315,7 +315,74 @@ async function findContactByPhone(phoneNumber: string): Promise<string | null> {
   }
 }
 
+// ---------- CNContact label mapping ----------
+// The Scripting Bridge silently drops phones on write (macOS bug).
+// We use the CNContacts ObjC framework for all writes and the Scripting Bridge for reads.
+
+function cnLabelForUserLabel(label: string): string {
+  const map: Record<string, string> = {
+    work: "_$!<Work>!$_",
+    home: "_$!<Home>!$_",
+    other: "_$!<Other>!$_",
+    mobile: "_$!<Mobile>!$_",
+    main: "_$!<Main>!$_",
+    iphone: "_$!<Mobile>!$_",
+  };
+  return map[label.toLowerCase()] ?? "_$!<Work>!$_";
+}
+
+function buildCNLabeledValues(
+  items: ContactField[],
+  wrapValue: string,
+): string {
+  // wrapValue: JXA expression wrapping the value, e.g. "$.CNPhoneNumber.phoneNumberWithStringValue($(\"{v}\"))"
+  // or just "$(\"{v}\")" for emails/urls
+  if (items.length === 0) return "$.NSArray.array";
+  const elements = items.map(item => {
+    const escapedLabel = escapeJXAString(cnLabelForUserLabel(item.label));
+    const escapedValue = escapeJXAString(item.value);
+    const valueExpr = wrapValue.replace("{v}", escapedValue);
+    return `$.CNLabeledValue.alloc.initWithLabelValue($("${escapedLabel}"), ${valueExpr})`;
+  });
+  return `$.NSArray.arrayWithArray([${elements.join(", ")}])`;
+}
+
+function buildCNAddresses(
+  addresses: Array<{ label?: string; street?: string; city?: string; zip?: string; state?: string; country?: string }>,
+): string {
+  if (addresses.length === 0) return "$.NSArray.array";
+  const elements = addresses.map(a => {
+    const label = escapeJXAString(cnLabelForUserLabel(a.label || "work"));
+    const lines: string[] = [];
+    lines.push("var _a = $.CNMutablePostalAddress.alloc.init;");
+    if (a.street) lines.push(`_a.street = $("${escapeJXAString(a.street)}");`);
+    if (a.city) lines.push(`_a.city = $("${escapeJXAString(a.city)}");`);
+    if (a.zip) lines.push(`_a.postalCode = $("${escapeJXAString(a.zip)}");`);
+    if (a.state) lines.push(`_a.state = $("${escapeJXAString(a.state)}");`);
+    if (a.country) lines.push(`_a.country = $("${escapeJXAString(a.country)}");`);
+    return `(function() { ${lines.join(" ")} return $.CNLabeledValue.alloc.initWithLabelValue($("${label}"), _a); })()`;
+  });
+  return `$.NSArray.arrayWithArray([${elements.join(", ")}])`;
+}
+
 // ---------- CRUD functions ----------
+
+/**
+ * Reads back a contact by its Scripting Bridge ID using the Scripting Bridge.
+ * Used after CNContact writes to return the persisted state.
+ */
+async function readContactById(contactId: string): Promise<ContactRecord | null> {
+  const escapedId = escapeJXAString(contactId);
+  const script = wrapJXAFunction(`
+    var Contacts = Application("Contacts");
+    var matches = Contacts.people.whose({id: "${escapedId}"})();
+    if (matches.length === 0) return JSON.stringify(null);
+    var people = matches;
+    var i = 0;
+    return JSON.stringify(${buildReadContactJXA("people[i]")});
+  `);
+  return await executeJXA<ContactRecord | null>(script);
+}
 
 async function createContact(params: CreateContactParams): Promise<ContactResult> {
   try {
@@ -323,118 +390,96 @@ async function createContact(params: CreateContactParams): Promise<ContactResult
       return { success: false, error: "Cannot access Contacts app" };
     }
 
-    // Normalize multi-value fields
-    const phones = normalizeMultiValueField(params.phones);
-    const emails = normalizeMultiValueField(params.emails);
-    const urls = normalizeMultiValueField(params.urls);
-    const addresses = params.addresses;
+    const phones = normalizeMultiValueField(params.phones) ?? [];
+    const emails = normalizeMultiValueField(params.emails) ?? [];
+    const urls = normalizeMultiValueField(params.urls) ?? [];
+    const addresses = params.addresses ?? [];
 
-    // Escape simple string fields
     const escapedFirstName = escapeJXAString(params.firstName);
     const escapedLastName = params.lastName ? escapeJXAString(params.lastName) : null;
-    const escapedOrganization = params.organization ? escapeJXAString(params.organization) : null;
+    const escapedOrg = params.organization ? escapeJXAString(params.organization) : null;
     const escapedJobTitle = params.jobTitle ? escapeJXAString(params.jobTitle) : null;
-    const escapedDepartment = params.department ? escapeJXAString(params.department) : null;
+    const escapedDept = params.department ? escapeJXAString(params.department) : null;
     const escapedNote = params.note ? escapeJXAString(params.note) : null;
-    const escapedBirthday = params.birthday ? escapeJXAString(params.birthday) : null;
 
-    // Build JXA array literals for multi-value fields
-    const phonesJXA = phones
-      ? phones.map(p => `{ label: "${escapeJXAString(p.label)}", value: "${escapeJXAString(p.value)}" }`).join(", ")
-      : "";
-    const emailsJXA = emails
-      ? emails.map(e => `{ label: "${escapeJXAString(e.label)}", value: "${escapeJXAString(e.value)}" }`).join(", ")
-      : "";
-    const urlsJXA = urls
-      ? urls.map(u => `{ label: "${escapeJXAString(u.label)}", value: "${escapeJXAString(u.value)}" }`).join(", ")
-      : "";
-    const addressesJXA = addresses
-      ? addresses.map(a => {
-          const label = a.label || "work";
-          const parts: string[] = [];
-          if (a.street) parts.push(`street: "${escapeJXAString(a.street)}"`);
-          if (a.city) parts.push(`city: "${escapeJXAString(a.city)}"`);
-          if (a.zip) parts.push(`zip: "${escapeJXAString(a.zip)}"`);
-          if (a.state) parts.push(`state: "${escapeJXAString(a.state)}"`);
-          if (a.country) parts.push(`country: "${escapeJXAString(a.country)}"`);
-          return `{ label: "${escapeJXAString(label)}", ${parts.join(", ")} }`;
-        }).join(", ")
-      : "";
+    const phonesExpr = buildCNLabeledValues(phones, '$.CNPhoneNumber.phoneNumberWithStringValue($("{v}"))');
+    const emailsExpr = buildCNLabeledValues(emails, '$("{v}")');
+    const urlsExpr = buildCNLabeledValues(urls, '$("{v}")');
+    const addrsExpr = buildCNAddresses(addresses);
 
-    const lastNameExpr = escapedLastName === null ? "null" : `"${escapedLastName}"`;
-    const orgExpr = escapedOrganization === null ? "null" : `"${escapedOrganization}"`;
-    const jobTitleExpr = escapedJobTitle === null ? "null" : `"${escapedJobTitle}"`;
-    const deptExpr = escapedDepartment === null ? "null" : `"${escapedDepartment}"`;
-    const noteExpr = escapedNote === null ? "null" : `"${escapedNote}"`;
-    const birthdayExpr = escapedBirthday === null ? "null" : `"${escapedBirthday}"`;
+    let birthdayCode = "";
+    if (params.birthday) {
+      const parts = params.birthday.split("-");
+      if (parts.length >= 2) {
+        const month = parseInt(parts[parts.length === 3 ? 1 : 0], 10);
+        const day = parseInt(parts[parts.length === 3 ? 2 : 1], 10);
+        const year = parts.length === 3 ? parseInt(parts[0], 10) : 0;
+        birthdayCode = `
+          var bday = $.NSDateComponents.alloc.init;
+          ${year > 0 ? `bday.year = ${year};` : ""}
+          bday.month = ${month};
+          bday.day = ${day};
+          contact.birthday = bday;
+        `;
+      }
+    }
 
     const script = wrapJXAFunction(`
+      ObjC.import("Contacts");
+
+      var store = $.CNContactStore.alloc.init;
+      var error = Ref();
+
+      var contact = $.CNMutableContact.alloc.init;
+      contact.givenName = $("${escapedFirstName}");
+      ${escapedLastName !== null ? `contact.familyName = $("${escapedLastName}");` : ""}
+      ${escapedOrg !== null ? `contact.organizationName = $("${escapedOrg}");` : ""}
+      ${escapedJobTitle !== null ? `contact.jobTitle = $("${escapedJobTitle}");` : ""}
+      ${escapedDept !== null ? `contact.departmentName = $("${escapedDept}");` : ""}
+      ${escapedNote !== null ? `contact.note = $("${escapedNote}");` : ""}
+
+      contact.phoneNumbers = ${phonesExpr};
+      contact.emailAddresses = ${emailsExpr};
+      contact.urlAddresses = ${urlsExpr};
+      contact.postalAddresses = ${addrsExpr};
+
+      ${birthdayCode}
+
+      var saveReq = $.CNSaveRequest.alloc.init;
+      saveReq.addContactToContainerWithIdentifier(contact, null);
+      var saved = store.executeSaveRequestError(saveReq, error);
+
+      if (!saved) {
+        var e = error[0];
+        var msg = e ? ObjC.unwrap(e.localizedDescription) : "unknown error";
+        return JSON.stringify({ success: false, error: msg });
+      }
+
+      // Read back via Scripting Bridge to get the canonical ID and persisted values
+      delay(0.3);
       var Contacts = Application("Contacts");
+      var searchName = "${escapedLastName !== null ? escapedLastName : escapedFirstName}";
+      var matches = Contacts.people.whose({ ${escapedLastName !== null ? "lastName" : "firstName"}: { _equals: searchName } })();
 
-      var personProps = { firstName: "${escapedFirstName}" };
-      var lastName = ${lastNameExpr};
-      if (lastName) personProps.lastName = lastName;
-
-      var person = Contacts.Person(personProps);
-      Contacts.people.push(person);
-
-      // Multi-value fields: phones
-      var phoneEntries = [${phonesJXA}];
-      for (var i = 0; i < phoneEntries.length; i++) {
-        person.phones.push(Contacts.Phone({ label: phoneEntries[i].label, value: phoneEntries[i].value }));
+      // Find the one we just created (most recent)
+      var bestMatch = null;
+      for (var i = 0; i < matches.length; i++) {
+        var people = matches;
+        var candidate = ${buildReadContactJXA("people[i]")};
+        if (candidate.firstName === "${escapedFirstName}") {
+          bestMatch = candidate;
+          break;
+        }
       }
 
-      // Multi-value fields: emails
-      var emailEntries = [${emailsJXA}];
-      for (var i = 0; i < emailEntries.length; i++) {
-        person.emails.push(Contacts.Email({ label: emailEntries[i].label, value: emailEntries[i].value }));
+      if (bestMatch) {
+        return JSON.stringify({ success: true, contact: bestMatch });
       }
 
-      // Multi-value fields: urls
-      var urlEntries = [${urlsJXA}];
-      for (var i = 0; i < urlEntries.length; i++) {
-        person.urls.push(Contacts.Url({ label: urlEntries[i].label, value: urlEntries[i].value }));
-      }
-
-      // Multi-value fields: addresses
-      var addrEntries = [${addressesJXA}];
-      for (var i = 0; i < addrEntries.length; i++) {
-        var addrProps = {};
-        if (addrEntries[i].street) addrProps.street = addrEntries[i].street;
-        if (addrEntries[i].city) addrProps.city = addrEntries[i].city;
-        if (addrEntries[i].zip) addrProps.zip = addrEntries[i].zip;
-        if (addrEntries[i].state) addrProps.state = addrEntries[i].state;
-        if (addrEntries[i].country) addrProps.country = addrEntries[i].country;
-        person.addresses.push(Contacts.Address(addrProps));
-      }
-
-      // Simple string properties
-      var organization = ${orgExpr};
-      if (organization) person.organization = organization;
-
-      var jobTitle = ${jobTitleExpr};
-      if (jobTitle) person.jobTitle = jobTitle;
-
-      var department = ${deptExpr};
-      if (department) person.department = department;
-
-      var note = ${noteExpr};
-      if (note) person.note = note;
-
-      // Birthday
-      var birthday = ${birthdayExpr};
-      if (birthday) {
-        person.birthDate = new Date(birthday);
-      }
-
-      Contacts.save();
-
-      // Read back persisted values
-      var contact = ${buildReadContactJXA("person")};
-      return JSON.stringify({ success: true, contact: contact });
+      return JSON.stringify({ success: true, contact: { id: "", firstName: "${escapedFirstName}", phones: [], emails: [], urls: [], addresses: [] } });
     `);
 
-    const result = await executeJXA<ContactResult>(script);
+    const result = await executeJXA<ContactResult>(script, { timeout: 15_000 });
     return result ?? { success: false, error: "Failed to create contact: empty response" };
   } catch (error) {
     return {
@@ -452,130 +497,111 @@ async function updateContact(params: UpdateContactParams): Promise<ContactResult
 
     const escapedId = escapeJXAString(params.id);
 
-    // Build set-property statements
-    const setStatements: string[] = [];
+    // Build CNContact property assignments
+    const setProps: string[] = [];
+    if (params.firstName !== undefined) setProps.push(`mc.givenName = $("${escapeJXAString(params.firstName)}");`);
+    if (params.lastName !== undefined) setProps.push(`mc.familyName = $("${escapeJXAString(params.lastName)}");`);
+    if (params.organization !== undefined) setProps.push(`mc.organizationName = $("${escapeJXAString(params.organization)}");`);
+    if (params.jobTitle !== undefined) setProps.push(`mc.jobTitle = $("${escapeJXAString(params.jobTitle)}");`);
+    if (params.department !== undefined) setProps.push(`mc.departmentName = $("${escapeJXAString(params.department)}");`);
+    if (params.note !== undefined) setProps.push(`mc.note = $("${escapeJXAString(params.note)}");`);
 
-    if (params.firstName !== undefined) {
-      setStatements.push(`person.firstName = "${escapeJXAString(params.firstName)}";`);
-    }
-    if (params.lastName !== undefined) {
-      setStatements.push(`person.lastName = "${escapeJXAString(params.lastName)}";`);
-    }
-    if (params.organization !== undefined) {
-      setStatements.push(`person.organization = "${escapeJXAString(params.organization)}";`);
-    }
-    if (params.jobTitle !== undefined) {
-      setStatements.push(`person.jobTitle = "${escapeJXAString(params.jobTitle)}";`);
-    }
-    if (params.department !== undefined) {
-      setStatements.push(`person.department = "${escapeJXAString(params.department)}";`);
-    }
-    if (params.note !== undefined) {
-      setStatements.push(`person.note = "${escapeJXAString(params.note)}";`);
-    }
+    let birthdayCode = "";
     if (params.birthday !== undefined) {
       if (params.birthday === "" || params.birthday === null) {
-        setStatements.push(`person.birthDate = null;`);
+        birthdayCode = "mc.birthday = null;";
       } else {
-        setStatements.push(`person.birthDate = new Date("${escapeJXAString(params.birthday)}");`);
+        const parts = params.birthday.split("-");
+        if (parts.length >= 2) {
+          const month = parseInt(parts[parts.length === 3 ? 1 : 0], 10);
+          const day = parseInt(parts[parts.length === 3 ? 2 : 1], 10);
+          const year = parts.length === 3 ? parseInt(parts[0], 10) : 0;
+          birthdayCode = `
+            var bday = $.NSDateComponents.alloc.init;
+            ${year > 0 ? `bday.year = ${year};` : ""}
+            bday.month = ${month};
+            bday.day = ${day};
+            mc.birthday = bday;
+          `;
+        }
       }
     }
 
-    // Build multi-value field replacement code
-    const multiValueCode: string[] = [];
-
+    // Multi-value field replacements
+    const multiValueSets: string[] = [];
     if (params.phones !== undefined) {
-      const phonesJXA = params.phones
-        .map(p => `{ label: "${escapeJXAString(p.label)}", value: "${escapeJXAString(p.value)}" }`)
-        .join(", ");
-      multiValueCode.push(`
-        var existingPhones = person.phones();
-        for (var i = existingPhones.length - 1; i >= 0; i--) { Contacts.delete(existingPhones[i]); }
-        var newPhones = [${phonesJXA}];
-        for (var i = 0; i < newPhones.length; i++) {
-          person.phones.push(Contacts.Phone({ label: newPhones[i].label, value: newPhones[i].value }));
-        }
-      `);
+      multiValueSets.push(`mc.phoneNumbers = ${buildCNLabeledValues(params.phones, '$.CNPhoneNumber.phoneNumberWithStringValue($("{v}"))') };`);
     }
-
     if (params.emails !== undefined) {
-      const emailsJXA = params.emails
-        .map(e => `{ label: "${escapeJXAString(e.label)}", value: "${escapeJXAString(e.value)}" }`)
-        .join(", ");
-      multiValueCode.push(`
-        var existingEmails = person.emails();
-        for (var i = existingEmails.length - 1; i >= 0; i--) { Contacts.delete(existingEmails[i]); }
-        var newEmails = [${emailsJXA}];
-        for (var i = 0; i < newEmails.length; i++) {
-          person.emails.push(Contacts.Email({ label: newEmails[i].label, value: newEmails[i].value }));
-        }
-      `);
+      multiValueSets.push(`mc.emailAddresses = ${buildCNLabeledValues(params.emails, '$("{v}")')};`);
     }
-
     if (params.urls !== undefined) {
-      const urlsJXA = params.urls
-        .map(u => `{ label: "${escapeJXAString(u.label)}", value: "${escapeJXAString(u.value)}" }`)
-        .join(", ");
-      multiValueCode.push(`
-        var existingUrls = person.urls();
-        for (var i = existingUrls.length - 1; i >= 0; i--) { Contacts.delete(existingUrls[i]); }
-        var newUrls = [${urlsJXA}];
-        for (var i = 0; i < newUrls.length; i++) {
-          person.urls.push(Contacts.Url({ label: newUrls[i].label, value: newUrls[i].value }));
-        }
-      `);
+      multiValueSets.push(`mc.urlAddresses = ${buildCNLabeledValues(params.urls, '$("{v}")')};`);
     }
-
     if (params.addresses !== undefined) {
-      const addressesJXA = params.addresses
-        .map(a => {
-          const label = a.label || "work";
-          const parts: string[] = [];
-          if (a.street) parts.push(`street: "${escapeJXAString(a.street)}"`);
-          if (a.city) parts.push(`city: "${escapeJXAString(a.city)}"`);
-          if (a.zip) parts.push(`zip: "${escapeJXAString(a.zip)}"`);
-          if (a.state) parts.push(`state: "${escapeJXAString(a.state)}"`);
-          if (a.country) parts.push(`country: "${escapeJXAString(a.country)}"`);
-          return `{ label: "${escapeJXAString(label)}", ${parts.join(", ")} }`;
-        })
-        .join(", ");
-      multiValueCode.push(`
-        var existingAddrs = person.addresses();
-        for (var i = existingAddrs.length - 1; i >= 0; i--) { Contacts.delete(existingAddrs[i]); }
-        var newAddrs = [${addressesJXA}];
-        for (var i = 0; i < newAddrs.length; i++) {
-          var addrProps = {};
-          if (newAddrs[i].street) addrProps.street = newAddrs[i].street;
-          if (newAddrs[i].city) addrProps.city = newAddrs[i].city;
-          if (newAddrs[i].zip) addrProps.zip = newAddrs[i].zip;
-          if (newAddrs[i].state) addrProps.state = newAddrs[i].state;
-          if (newAddrs[i].country) addrProps.country = newAddrs[i].country;
-          person.addresses.push(Contacts.Address(addrProps));
-        }
-      `);
+      multiValueSets.push(`mc.postalAddresses = ${buildCNAddresses(params.addresses)};`);
     }
 
     const script = wrapJXAFunction(`
+      ObjC.import("Contacts");
+
+      var store = $.CNContactStore.alloc.init;
+      var error = Ref();
+
+      // Find the contact by its Scripting Bridge ID
+      // The SB ID has the format "UUID:ABPerson" — the CNContact identifier is just the UUID part
+      var sbId = "${escapedId}";
+      var cnId = sbId.indexOf(":") !== -1 ? sbId.split(":")[0] : sbId;
+
+      var keys = $.NSArray.arrayWithArray([
+        $.CNContactGivenNameKey, $.CNContactFamilyNameKey,
+        $.CNContactOrganizationNameKey, $.CNContactJobTitleKey,
+        $.CNContactDepartmentNameKey, $.CNContactNoteKey,
+        $.CNContactPhoneNumbersKey, $.CNContactEmailAddressesKey,
+        $.CNContactUrlAddressesKey, $.CNContactPostalAddressesKey,
+        $.CNContactBirthdayKey, $.CNContactIdentifierKey
+      ]);
+
+      var predicate = $.CNContact.predicateForContactsWithIdentifiers($.NSArray.arrayWithObject($(cnId)));
+      var contacts = store.unifiedContactsMatchingPredicateKeysToFetchError(predicate, keys, error);
+
+      if (!contacts || contacts.count === 0) {
+        return JSON.stringify({ success: false, error: "Contact not found with ID: " + sbId });
+      }
+
+      var mc = contacts.objectAtIndex(0).mutableCopy;
+
+      // Set scalar properties
+      ${setProps.join("\n      ")}
+      ${birthdayCode}
+
+      // Set multi-value fields
+      ${multiValueSets.join("\n      ")}
+
+      var saveReq = $.CNSaveRequest.alloc.init;
+      saveReq.updateContact(mc);
+      var saved = store.executeSaveRequestError(saveReq, error);
+
+      if (!saved) {
+        var e = error[0];
+        var msg = e ? ObjC.unwrap(e.localizedDescription) : "unknown error";
+        return JSON.stringify({ success: false, error: msg });
+      }
+
+      // Read back via Scripting Bridge
+      delay(0.3);
       var Contacts = Application("Contacts");
       var matches = Contacts.people.whose({ id: "${escapedId}" })();
-      if (matches.length === 0) {
-        return JSON.stringify({ success: false, error: "Contact not found with ID: ${escapedId}" });
+      if (matches.length > 0) {
+        var people = matches;
+        var i = 0;
+        var contact = ${buildReadContactJXA("people[i]")};
+        return JSON.stringify({ success: true, contact: contact });
       }
-      var person = matches[0];
-
-      // Set simple properties
-      ${setStatements.join("\n      ")}
-
-      // Replace multi-value fields
-      ${multiValueCode.join("\n      ")}
-
-      Contacts.save();
-
-      var contact = ${buildReadContactJXA("person")};
-      return JSON.stringify({ success: true, contact: contact });
+      return JSON.stringify({ success: true, contact: { id: "${escapedId}", firstName: "", phones: [], emails: [], urls: [], addresses: [] } });
     `);
 
-    const result = await executeJXA<ContactResult>(script);
+    const result = await executeJXA<ContactResult>(script, { timeout: 15_000 });
     return result ?? { success: false, error: "Failed to update contact: empty response" };
   } catch (error) {
     return {
@@ -594,14 +620,33 @@ async function deleteContact(id: string): Promise<{ success: boolean; error?: st
     const escapedId = escapeJXAString(id);
 
     const script = wrapJXAFunction(`
-      var Contacts = Application("Contacts");
-      var matches = Contacts.people.whose({ id: "${escapedId}" })();
-      if (matches.length === 0) {
-        return JSON.stringify({ success: false, error: "Contact not found with ID: ${escapedId}" });
+      ObjC.import("Contacts");
+
+      var store = $.CNContactStore.alloc.init;
+      var error = Ref();
+
+      var sbId = "${escapedId}";
+      var cnId = sbId.indexOf(":") !== -1 ? sbId.split(":")[0] : sbId;
+
+      var keys = $.NSArray.arrayWithObject($.CNContactIdentifierKey);
+      var predicate = $.CNContact.predicateForContactsWithIdentifiers($.NSArray.arrayWithObject($(cnId)));
+      var contacts = store.unifiedContactsMatchingPredicateKeysToFetchError(predicate, keys, error);
+
+      if (!contacts || contacts.count === 0) {
+        return JSON.stringify({ success: false, error: "Contact not found with ID: " + sbId });
       }
-      var person = matches[0];
-      Contacts.delete(person);
-      Contacts.save();
+
+      var mc = contacts.objectAtIndex(0).mutableCopy;
+      var saveReq = $.CNSaveRequest.alloc.init;
+      saveReq.deleteContact(mc);
+      var saved = store.executeSaveRequestError(saveReq, error);
+
+      if (!saved) {
+        var e = error[0];
+        var msg = e ? ObjC.unwrap(e.localizedDescription) : "unknown error";
+        return JSON.stringify({ success: false, error: msg });
+      }
+
       return JSON.stringify({ success: true });
     `);
 
