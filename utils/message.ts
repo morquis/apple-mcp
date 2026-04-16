@@ -1,58 +1,65 @@
 import { executeJXA, wrapJXAFunction } from "../core/jxa-bridge.ts";
-import { promisify } from 'node:util';
-import { exec } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import Database from "better-sqlite3";
+import { homedir } from "node:os";
+import path from "node:path";
 
-const execAsync = promisify(exec);
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-// Retry configuration
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 second
+const DB_PATH = path.join(homedir(), "Library/Messages/chat.db");
 
-async function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// ---------------------------------------------------------------------------
+// Database helper — singleton, read-only
+// ---------------------------------------------------------------------------
+
+let _db: Database.Database | null = null;
+
+function getDb(): Database.Database {
+  if (_db) {
+    try {
+      // Quick liveness check — will throw if the handle was closed externally
+      _db.pragma("journal_mode");
+      return _db;
+    } catch {
+      _db = null;
+    }
+  }
+  const db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+  db.pragma("journal_mode = WAL");
+  db.pragma("query_only = ON");
+  _db = db;
+  return db;
 }
 
-async function retryOperation<T>(operation: () => Promise<T>, retries = MAX_RETRIES, delay = RETRY_DELAY): Promise<T> {
-  try {
-  return await operation();
-  } catch (error) {
-  if (retries > 0) {
-  console.error(`Operation failed, retrying... (${retries} attempts remaining)`);
-  await sleep(delay);
-  return retryOperation(operation, retries - 1, delay);
-  }
-  throw error;
-  }
-}
+// ---------------------------------------------------------------------------
+// Phone / handle helpers  (kept from original, adapted for better-sqlite3)
+// ---------------------------------------------------------------------------
 
 function isEmailOrServiceId(identifier: string): boolean {
-  return identifier.includes('@') || /^[a-zA-Z]/.test(identifier);
+  return identifier.includes("@") || /^[a-zA-Z]/.test(identifier);
 }
 
 function normalizePhoneNumber(phone: string): string[] {
-  // Email addresses and service IDs (e.g. "o2Business") are valid handle IDs — pass through as-is
+  // Email addresses and service IDs (e.g. "o2Business") are valid handle IDs
   if (isEmailOrServiceId(phone)) {
     return [phone];
   }
 
-  // Remove all non-numeric characters except +
-  const cleaned = phone.replace(/[^0-9+]/g, '');
-
+  const cleaned = phone.replace(/[^0-9+]/g, "");
   if (!cleaned) return [];
 
   const formats = new Set<string>();
 
-  // Already in E.164 international format (+49..., +1..., +212...) — use as-is
-  if (cleaned.startsWith('+')) {
+  // Already in E.164 international format (+49…, +1…, +212…) — use as-is
+  if (cleaned.startsWith("+")) {
     formats.add(cleaned);
     return Array.from(formats);
   }
 
-  // German local format: 0163... → +49163...
-  if (cleaned.startsWith('0')) {
+  // German local format: 0163… → +49163…
+  if (cleaned.startsWith("0")) {
     formats.add(`+49${cleaned.slice(1)}`);
-    // Also keep with + in case handle stored differently
     formats.add(`+${cleaned}`);
     return Array.from(formats);
   }
@@ -63,7 +70,7 @@ function normalizePhoneNumber(phone: string): string[] {
   }
 
   // US 11-digit starting with 1: 12125551234 → +12125551234
-  if (cleaned.length === 11 && cleaned.startsWith('1')) {
+  if (cleaned.length === 11 && cleaned.startsWith("1")) {
     formats.add(`+${cleaned}`);
   }
 
@@ -72,6 +79,343 @@ function normalizePhoneNumber(phone: string): string[] {
 
   return Array.from(formats);
 }
+
+/**
+ * Resolve a user-supplied identifier (phone number, e-mail, service id) to
+ * the actual `handle.id` values stored in chat.db.
+ *
+ * Three-step resolution:
+ *  1. Exact match with normalized formats
+ *  2. Digits-only substring match (for phone numbers)
+ *  3. Case-insensitive LIKE (for email / service IDs)
+ */
+function resolveHandleIds(db: Database.Database, identifier: string): string[] {
+  // Step 1 — exact match against normalized candidates
+  const candidates = normalizePhoneNumber(identifier);
+  if (candidates.length > 0) {
+    const placeholders = candidates.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT DISTINCT id FROM handle WHERE id IN (${placeholders})`)
+      .all(...candidates) as { id: string }[];
+    if (rows.length > 0) return rows.map((r) => r.id);
+  }
+
+  // Step 2 — digits-only substring match
+  const digits = identifier.replace(/[^0-9]/g, "");
+  if (digits.length >= 6) {
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT id FROM handle
+         WHERE REPLACE(REPLACE(REPLACE(REPLACE(id, ' ', ''), '-', ''), '(', ''), ')', '')
+               LIKE '%' || ? || '%'`
+      )
+      .all(digits) as { id: string }[];
+    if (rows.length > 0) return rows.map((r) => r.id);
+  }
+
+  // Step 3 — case-insensitive email / service-id match
+  if (isEmailOrServiceId(identifier)) {
+    const rows = db
+      .prepare(`SELECT DISTINCT id FROM handle WHERE id LIKE ?`)
+      .all(identifier) as { id: string }[];
+    if (rows.length > 0) return rows.map((r) => r.id);
+  }
+
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// Binary attributedBody decoder (NSKeyedArchiver / NSMutableString)
+// ---------------------------------------------------------------------------
+
+function extractTextFromAttributedBody(blob: Buffer): string | null {
+  if (!blob || blob.length === 0) return null;
+  try {
+    const nsStringMarker = Buffer.from("NSString");
+    let idx = blob.indexOf(nsStringMarker);
+    let markerLen = nsStringMarker.length;
+    if (idx === -1) {
+      const nsMutableMarker = Buffer.from("NSMutableString");
+      idx = blob.indexOf(nsMutableMarker);
+      markerLen = nsMutableMarker.length;
+    }
+    if (idx === -1) return null;
+
+    const preambleLen = 5;
+    const contentStart = idx + markerLen + preambleLen;
+    if (contentStart >= blob.length) return null;
+
+    const content = blob.subarray(contentStart);
+    let textLength: number;
+    let textStart: number;
+
+    if (content[0] === 0x81) {
+      if (content.length < 3) return null;
+      textLength = content[1] | (content[2] << 8);
+      textStart = 3;
+    } else {
+      textLength = content[0];
+      textStart = 1;
+    }
+
+    if (textStart + textLength > content.length) return null;
+    const text = content.subarray(textStart, textStart + textLength).toString("utf-8");
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function getMessageText(row: { text: string | null; attributedBody: Buffer | null }): string | null {
+  if (row.text && row.text !== "\ufffc" && !row.text.startsWith("\ufffc\ufffc")) {
+    return row.text;
+  }
+  if (row.attributedBody) {
+    return extractTextFromAttributedBody(row.attributedBody);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Attachment lookup
+// ---------------------------------------------------------------------------
+
+function getAttachmentPaths(db: Database.Database, messageRowid: number): string[] {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT filename FROM attachment
+         JOIN message_attachment_join ON attachment.ROWID = message_attachment_join.attachment_id
+         WHERE message_attachment_join.message_id = ?`
+      )
+      .all(messageRowid) as { filename: string }[];
+    return rows.map((r) => r.filename).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message interface
+// ---------------------------------------------------------------------------
+
+interface Message {
+  content: string;
+  date: string;
+  sender: string;
+  is_from_me: boolean;
+  group_name?: string;
+  chat_id?: string;
+  attachments?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Row type returned by the base query
+// ---------------------------------------------------------------------------
+
+interface MessageRow {
+  rowid: number;
+  text: string | null;
+  attributedBody: Buffer | null;
+  is_from_me: number;
+  date: string;
+  handle: string | null;
+  group_name: string | null;
+  chat_id: string | null;
+  has_attachment: number;
+}
+
+// ---------------------------------------------------------------------------
+// readMessages — read messages for a given contact, with optional date range
+// ---------------------------------------------------------------------------
+
+async function readMessages(
+  phoneNumber: string,
+  limit = 10,
+  startDate?: string,
+  endDate?: string
+): Promise<Message[]> {
+  try {
+    const db = getDb();
+
+    // Resolve handle IDs
+    const handleIds = resolveHandleIds(db, phoneNumber);
+    console.error("Resolved handle IDs:", handleIds);
+
+    if (handleIds.length === 0) {
+      console.error("No matching handles found in database for:", phoneNumber);
+      return [];
+    }
+
+    // Find chats involving this handle (via chat_handle_join)
+    const handlePlaceholders = handleIds.map(() => "?").join(",");
+    const chatRows = db
+      .prepare(
+        `SELECT DISTINCT chat_id FROM chat_handle_join
+         WHERE handle_id IN (SELECT ROWID FROM handle WHERE id IN (${handlePlaceholders}))`
+      )
+      .all(...handleIds) as { chat_id: number }[];
+
+    if (chatRows.length === 0) {
+      console.error("No chats found for handles:", handleIds);
+      return [];
+    }
+
+    const chatIds = chatRows.map((r) => r.chat_id);
+    const chatPlaceholders = chatIds.map(() => "?").join(",");
+
+    // Build WHERE conditions
+    const conditions: string[] = [
+      `c.ROWID IN (${chatPlaceholders})`,
+      "m.associated_message_type = 0", // filter tapbacks/reactions
+    ];
+    const params: (string | number)[] = [...chatIds];
+
+    if (startDate) {
+      conditions.push(
+        "datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') >= ?"
+      );
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push(
+        "datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') <= ?"
+      );
+      params.push(endDate);
+    }
+
+    const sql = `
+      SELECT
+        m.ROWID as rowid,
+        m.text,
+        m.attributedBody,
+        m.is_from_me,
+        datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as date,
+        h.id as handle,
+        c.display_name as group_name,
+        c.chat_identifier as chat_id,
+        m.cache_has_attachments as has_attachment
+      FROM message m
+      JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+      JOIN chat c ON cmj.chat_id = c.ROWID
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY m.date DESC
+      LIMIT ?
+    `;
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as MessageRow[];
+
+    const messages: Message[] = [];
+    for (const row of rows) {
+      const text = getMessageText(row);
+      if (!text) continue; // skip empty / object-replacement-only messages
+
+      const msg: Message = {
+        content: text,
+        date: row.date,
+        sender: row.handle ?? "Unknown",
+        is_from_me: Boolean(row.is_from_me),
+      };
+
+      if (row.group_name) msg.group_name = row.group_name;
+      if (row.chat_id) msg.chat_id = row.chat_id;
+
+      if (row.has_attachment) {
+        const attachments = getAttachmentPaths(db, row.rowid);
+        if (attachments.length > 0) {
+          msg.attachments = attachments;
+          msg.content += `\n[Attachments: ${attachments.length}]`;
+        }
+      }
+
+      messages.push(msg);
+    }
+
+    return messages;
+  } catch (error) {
+    console.error("Error reading messages:", error);
+    if (error instanceof Error) {
+      console.error("Error details:", error.message);
+      console.error("Stack trace:", error.stack);
+    }
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// getUnreadMessages — unread messages across all conversations
+// ---------------------------------------------------------------------------
+
+async function getUnreadMessages(limit = 10): Promise<Message[]> {
+  try {
+    const db = getDb();
+
+    const sql = `
+      SELECT
+        m.ROWID as rowid,
+        m.text,
+        m.attributedBody,
+        m.is_from_me,
+        datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as date,
+        h.id as handle,
+        c.display_name as group_name,
+        c.chat_identifier as chat_id,
+        m.cache_has_attachments as has_attachment
+      FROM message m
+      JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+      JOIN chat c ON cmj.chat_id = c.ROWID
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE m.is_from_me = 0
+        AND m.is_read = 0
+        AND m.associated_message_type = 0
+      ORDER BY m.date DESC
+      LIMIT ?
+    `;
+
+    const rows = db.prepare(sql).all(limit) as MessageRow[];
+
+    const messages: Message[] = [];
+    for (const row of rows) {
+      const text = getMessageText(row);
+      if (!text) continue;
+
+      const msg: Message = {
+        content: text,
+        date: row.date,
+        sender: row.handle ?? "Unknown",
+        is_from_me: false,
+      };
+
+      if (row.group_name) msg.group_name = row.group_name;
+      if (row.chat_id) msg.chat_id = row.chat_id;
+
+      if (row.has_attachment) {
+        const attachments = getAttachmentPaths(db, row.rowid);
+        if (attachments.length > 0) {
+          msg.attachments = attachments;
+          msg.content += `\n[Attachments: ${attachments.length}]`;
+        }
+      }
+
+      messages.push(msg);
+    }
+
+    return messages;
+  } catch (error) {
+    console.error("Error reading unread messages:", error);
+    if (error instanceof Error) {
+      console.error("Error details:", error.message);
+      console.error("Stack trace:", error.stack);
+    }
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sendMessage — JXA-based (unchanged)
+// ---------------------------------------------------------------------------
 
 async function sendMessage(phoneNumber: string, message: string) {
   const script = wrapJXAFunction(`
@@ -107,488 +451,40 @@ async function sendMessage(phoneNumber: string, message: string) {
   return await executeJXA(script, { parseJSON: false });
 }
 
-interface Message {
-  content: string;
-  date: string;
-  sender: string;
-  is_from_me: boolean;
-  attachments?: string[];
-  url?: string;
-}
-
-async function checkMessagesDBAccess(): Promise<boolean> {
-  try {
-  const dbPath = `${process.env.HOME}/Library/Messages/chat.db`;
-  await access(dbPath);
-  
-  // Additional check - try to query the database
-  await execAsync(`sqlite3 "${dbPath}" "SELECT 1;"`);
-  
-  return true;
-  } catch (error) {
-  console.error(`
-Error: Cannot access Messages database.
-To fix this, please grant Full Disk Access to Terminal/iTerm2:
-1. Open System Preferences
-2. Go to Security & Privacy > Privacy
-3. Select "Full Disk Access" from the left sidebar
-4. Click the lock icon to make changes
-5. Add Terminal.app or iTerm.app to the list
-6. Restart your terminal and try again
-
-Error details: ${error instanceof Error ? error.message : String(error)}
-`);
-  return false;
-  }
-}
-
-function decodeAttributedBody(hexString: string): { text: string; url?: string } {
-  try {
-  // Convert hex to buffer
-  const buffer = Buffer.from(hexString, 'hex');
-  const content = buffer.toString();
-  
-  // Common patterns in attributedBody
-  const patterns = [
-  /NSString">(.*?)</,           // Basic NSString pattern
-  /NSString">([^<]+)/,          // NSString without closing tag
-  /NSNumber">\d+<.*?NSString">(.*?)</,  // NSNumber followed by NSString
-  /NSArray">.*?NSString">(.*?)</,       // NSString within NSArray
-  /"string":\s*"([^"]+)"/,      // JSON-style string
-  /text[^>]*>(.*?)</,           // Generic XML-style text
-  /message>(.*?)</              // Generic message content
-  ];
-  
-  // Try each pattern
-  let text = '';
-  for (const pattern of patterns) {
-  const match = content.match(pattern);
-  if (match?.[1]) {
-  text = match[1];
-  if (text.length > 5) { // Only use if we got something substantial
-  break;
-  }
-  }
-  }
-  
-  // Look for URLs
-  const urlPatterns = [
-  /(https?:\/\/[^\s<"]+)/,      // Standard URLs
-  /NSString">(https?:\/\/[^\s<"]+)/, // URLs in NSString
-  /"url":\s*"(https?:\/\/[^"]+)"/, // URLs in JSON format
-  /link[^>]*>(https?:\/\/[^<]+)/ // URLs in XML-style tags
-  ];
-  
-  let url: string | undefined;
-  for (const pattern of urlPatterns) {
-  const match = content.match(pattern);
-  if (match?.[1]) {
-  url = match[1];
-  break;
-  }
-  }
-  
-  if (!text && !url) {
-  // Try to extract any readable text content
-  const readableText = content
-  .replace(/streamtyped.*?NSString/g, '') // Remove streamtyped header
-  .replace(/NSAttributedString.*?NSString/g, '') // Remove attributed string metadata
-  .replace(/NSDictionary.*?$/g, '') // Remove dictionary metadata
-  .replace(/\+[A-Za-z]+\s/g, '') // Remove +[identifier] patterns
-  .replace(/NSNumber.*?NSValue.*?\*/g, '') // Remove number/value metadata
-  .replace(/[^\x20-\x7E]/g, ' ') // Replace non-printable chars with space
-  .replace(/\s+/g, ' ')          // Normalize whitespace
-  .trim();
-  
-  if (readableText.length > 5) {    // Only use if we got something substantial
-  text = readableText;
-  } else {
-  return { text: '[Message content not readable]' };
-  }
-  }
-
-  // Clean up the found text
-  if (text) {
-  text = text
-  .replace(/^[+\s]+/, '') // Remove leading + and spaces
-  .replace(/\s*iI\s*[A-Z]\s*$/, '') // Remove iI K pattern at end
-  .replace(/\s+/g, ' ') // Normalize whitespace
-  .trim();
-  }
-  
-  return { text: text || url || '', url };
-  } catch (error) {
-  console.error('Error decoding attributedBody:', error);
-  return { text: '[Message content not readable]' };
-  }
-}
-
-async function getAttachmentPaths(messageId: number): Promise<string[]> {
-  try {
-  const query = `
-  SELECT filename
-  FROM attachment
-  INNER JOIN message_attachment_join 
-  ON attachment.ROWID = message_attachment_join.attachment_id
-  WHERE message_attachment_join.message_id = ${messageId}
-  `;
-  
-  const { stdout } = await execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`);
-  
-  if (!stdout.trim()) {
-  return [];
-  }
-  
-  const attachments = JSON.parse(stdout) as { filename: string }[];
-  return attachments.map(a => a.filename).filter(Boolean);
-  } catch (error) {
-  console.error('Error getting attachments:', error);
-  return [];
-  }
-}
-
-async function resolveHandleIds(identifier: string): Promise<string[]> {
-  const dbPath = `${process.env.HOME}/Library/Messages/chat.db`;
-
-  // Step 1: Try normalized formats as exact matches
-  const candidates = normalizePhoneNumber(identifier);
-  if (candidates.length > 0) {
-    const inClause = candidates.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
-    try {
-      const { stdout } = await execAsync(
-        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE id IN (${inClause})"`,
-      );
-      if (stdout.trim()) {
-        const rows = JSON.parse(stdout) as { id: string }[];
-        if (rows.length > 0) return rows.map(r => r.id);
-      }
-    } catch (_) {}
-  }
-
-  // Step 2: Fallback — digits-only substring match in handle table
-  // Extract just the digits from the input for a LIKE query
-  const digits = identifier.replace(/[^0-9]/g, '');
-  if (digits.length >= 6) {
-    const escaped = digits.replace(/'/g, "''");
-    try {
-      const { stdout } = await execAsync(
-        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE REPLACE(REPLACE(REPLACE(REPLACE(id, ' ', ''), '-', ''), '(', ''), ')', '') LIKE '%${escaped}%'"`,
-      );
-      if (stdout.trim()) {
-        const rows = JSON.parse(stdout) as { id: string }[];
-        if (rows.length > 0) return rows.map(r => r.id);
-      }
-    } catch (_) {}
-  }
-
-  // Step 3: For email/service IDs, try case-insensitive LIKE
-  if (isEmailOrServiceId(identifier)) {
-    const escaped = identifier.replace(/'/g, "''");
-    try {
-      const { stdout } = await execAsync(
-        `sqlite3 -json "${dbPath}" "SELECT DISTINCT id FROM handle WHERE id LIKE '${escaped}'"`,
-      );
-      if (stdout.trim()) {
-        const rows = JSON.parse(stdout) as { id: string }[];
-        if (rows.length > 0) return rows.map(r => r.id);
-      }
-    } catch (_) {}
-  }
-
-  return [];
-}
-
-async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]> {
-  try {
-  // Check database access with retries
-  const hasAccess = await retryOperation(checkMessagesDBAccess);
-  if (!hasAccess) {
-  return [];
-  }
-
-  // Resolve the identifier to matching handle IDs in the DB
-  const handleIds = await resolveHandleIds(phoneNumber);
-  console.error("Resolved handle IDs:", handleIds);
-
-  if (handleIds.length === 0) {
-    console.error("No matching handles found in database for:", phoneNumber);
-    return [];
-  }
-
-  const handleList = handleIds.map(h => `'${h.replace(/'/g, "''")}'`).join(',');
-
-  const query = `
-  SELECT
-  m.ROWID as message_id,
-  CASE
-  WHEN m.text IS NOT NULL AND m.text != '' THEN m.text
-  WHEN m.attributedBody IS NOT NULL THEN hex(m.attributedBody)
-  ELSE NULL
-  END as content,
-  datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') as date,
-  h.id as sender,
-  m.is_from_me,
-  m.is_audio_message,
-  m.cache_has_attachments,
-  m.subject,
-  CASE
-  WHEN m.text IS NOT NULL AND m.text != '' THEN 0
-  WHEN m.attributedBody IS NOT NULL THEN 1
-  ELSE 2
-  END as content_type
-  FROM message m
-  INNER JOIN handle h ON h.ROWID = m.handle_id
-  WHERE h.id IN (${handleList})
-  AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
-  AND m.is_from_me IS NOT NULL  -- Ensure it's a real message
-  AND m.item_type = 0  -- Regular messages only
-  AND m.is_audio_message = 0  -- Skip audio messages
-  ORDER BY m.date DESC
-  LIMIT ${limit}
-  `;
-
-  // Execute query with retries
-  const { stdout } = await retryOperation(() => 
-  execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
-  );
-  
-  if (!stdout.trim()) {
-  console.error("No messages found in database for the given phone number");
-  return [];
-  }
-
-  const messages = JSON.parse(stdout) as (Message & {
-  message_id: number;
-  is_audio_message: number;
-  cache_has_attachments: number;
-  subject: string | null;
-  content_type: number;
-  })[];
-
-  // Process messages with potential parallel attachment fetching
-  const processedMessages = await Promise.all(
-  messages
-  .filter(msg => msg.content !== null || msg.cache_has_attachments === 1)
-  .map(async msg => {
-  let content = msg.content || '';
-  let url: string | undefined;
-  
-  // If it's an attributedBody (content_type = 1), decode it
-  if (msg.content_type === 1) {
-  const decoded = decodeAttributedBody(content);
-  content = decoded.text;
-  url = decoded.url;
-  } else {
-  // Check for URLs in regular text messages
-  const urlMatch = content.match(/(https?:\/\/[^\s]+)/);
-  if (urlMatch) {
-  url = urlMatch[1];
-  }
-  }
-  
-  // Get attachments if any
-  let attachments: string[] = [];
-  if (msg.cache_has_attachments) {
-  attachments = await getAttachmentPaths(msg.message_id);
-  }
-  
-  // Add subject if present
-  if (msg.subject) {
-  content = `Subject: ${msg.subject}\n${content}`;
-  }
-  
-  // Format the message object
-  const formattedMsg: Message = {
-  content: content || '[No text content]',
-  date: new Date(msg.date).toISOString(),
-  sender: msg.sender,
-  is_from_me: Boolean(msg.is_from_me)
-  };
-
-  // Add attachments if any
-  if (attachments.length > 0) {
-  formattedMsg.attachments = attachments;
-  formattedMsg.content += `\n[Attachments: ${attachments.length}]`;
-  }
-
-  // Add URL if present
-  if (url) {
-  formattedMsg.url = url;
-  formattedMsg.content += `\n[URL: ${url}]`;
-  }
-
-  return formattedMsg;
-  })
-  );
-
-  return processedMessages;
-  } catch (error) {
-  console.error('Error reading messages:', error);
-  if (error instanceof Error) {
-  console.error('Error details:', error.message);
-  console.error('Stack trace:', error.stack);
-  }
-  return [];
-  }
-}
-
-async function getUnreadMessages(limit = 10): Promise<Message[]> {
-  try {
-  // Check database access with retries
-  const hasAccess = await retryOperation(checkMessagesDBAccess);
-  if (!hasAccess) {
-  return [];
-  }
-
-  const query = `
-  SELECT 
-  m.ROWID as message_id,
-  CASE 
-  WHEN m.text IS NOT NULL AND m.text != '' THEN m.text
-  WHEN m.attributedBody IS NOT NULL THEN hex(m.attributedBody)
-  ELSE NULL
-  END as content,
-  datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') as date,
-  h.id as sender,
-  m.is_from_me,
-  m.is_audio_message,
-  m.cache_has_attachments,
-  m.subject,
-  CASE 
-  WHEN m.text IS NOT NULL AND m.text != '' THEN 0
-  WHEN m.attributedBody IS NOT NULL THEN 1
-  ELSE 2
-  END as content_type
-  FROM message m 
-  INNER JOIN handle h ON h.ROWID = m.handle_id 
-  WHERE m.is_from_me = 0  -- Only messages from others
-  AND m.is_read = 0   -- Only unread messages
-  AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
-  AND m.is_audio_message = 0  -- Skip audio messages
-  AND m.item_type = 0  -- Regular messages only
-  ORDER BY m.date DESC 
-  LIMIT ${limit}
-  `;
-
-  // Execute query with retries
-  const { stdout } = await retryOperation(() => 
-  execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
-  );
-  
-  if (!stdout.trim()) {
-  console.error("No unread messages found");
-  return [];
-  }
-
-  const messages = JSON.parse(stdout) as (Message & {
-  message_id: number;
-  is_audio_message: number;
-  cache_has_attachments: number;
-  subject: string | null;
-  content_type: number;
-  })[];
-
-  // Process messages with potential parallel attachment fetching
-  const processedMessages = await Promise.all(
-  messages
-  .filter(msg => msg.content !== null || msg.cache_has_attachments === 1)
-  .map(async msg => {
-  let content = msg.content || '';
-  let url: string | undefined;
-  
-  // If it's an attributedBody (content_type = 1), decode it
-  if (msg.content_type === 1) {
-  const decoded = decodeAttributedBody(content);
-  content = decoded.text;
-  url = decoded.url;
-  } else {
-  // Check for URLs in regular text messages
-  const urlMatch = content.match(/(https?:\/\/[^\s]+)/);
-  if (urlMatch) {
-  url = urlMatch[1];
-  }
-  }
-  
-  // Get attachments if any
-  let attachments: string[] = [];
-  if (msg.cache_has_attachments) {
-  attachments = await getAttachmentPaths(msg.message_id);
-  }
-  
-  // Add subject if present
-  if (msg.subject) {
-  content = `Subject: ${msg.subject}\n${content}`;
-  }
-  
-  // Format the message object
-  const formattedMsg: Message = {
-  content: content || '[No text content]',
-  date: new Date(msg.date).toISOString(),
-  sender: msg.sender,
-  is_from_me: Boolean(msg.is_from_me)
-  };
-
-  // Add attachments if any
-  if (attachments.length > 0) {
-  formattedMsg.attachments = attachments;
-  formattedMsg.content += `\n[Attachments: ${attachments.length}]`;
-  }
-
-  // Add URL if present
-  if (url) {
-  formattedMsg.url = url;
-  formattedMsg.content += `\n[URL: ${url}]`;
-  }
-
-  return formattedMsg;
-  })
-  );
-
-  return processedMessages;
-  } catch (error) {
-  console.error('Error reading unread messages:', error);
-  if (error instanceof Error) {
-  console.error('Error details:', error.message);
-  console.error('Stack trace:', error.stack);
-  }
-  return [];
-  }
-}
+// ---------------------------------------------------------------------------
+// scheduleMessage — JXA-based (unchanged)
+// ---------------------------------------------------------------------------
 
 async function scheduleMessage(phoneNumber: string, message: string, scheduledTime: Date) {
-  // Store the scheduled message details
   const scheduledMessages = new Map();
-  
-  // Calculate delay in milliseconds
+
   const delay = scheduledTime.getTime() - Date.now();
-  
+
   if (delay < 0) {
-  throw new Error('Cannot schedule message in the past');
+    throw new Error("Cannot schedule message in the past");
   }
-  
-  // Schedule the message
+
   const timeoutId = setTimeout(async () => {
-  try {
-  await sendMessage(phoneNumber, message);
-  scheduledMessages.delete(timeoutId);
-  } catch (error) {
-  console.error('Failed to send scheduled message:', error);
-  }
+    try {
+      await sendMessage(phoneNumber, message);
+      scheduledMessages.delete(timeoutId);
+    } catch (error) {
+      console.error("Failed to send scheduled message:", error);
+    }
   }, delay);
-  
-  // Store the scheduled message details for reference
+
   scheduledMessages.set(timeoutId, {
-  phoneNumber,
-  message,
-  scheduledTime,
-  timeoutId
+    phoneNumber,
+    message,
+    scheduledTime,
+    timeoutId,
   });
-  
+
   return {
-  id: timeoutId,
-  scheduledTime,
-  message,
-  phoneNumber
+    id: timeoutId,
+    scheduledTime,
+    message,
+    phoneNumber,
   };
 }
 

@@ -534,13 +534,13 @@ function initServer() {
                 if (!args.phoneNumber) {
                   throw new Error("Phone number is required for read operation");
                 }
-                const messages = await messageModule.readMessages(args.phoneNumber, args.limit);
+                const messages = await messageModule.readMessages(args.phoneNumber, args.limit, args.startDate, args.endDate);
                 return {
                   content: [{ 
                     type: "text", 
-                    text: messages.length > 0 ? 
-                      messages.map(msg => 
-                        `[${new Date(msg.date).toLocaleString()}] ${msg.is_from_me ? 'Me' : msg.sender}: ${msg.content}`
+                    text: messages.length > 0 ?
+                      messages.map(msg =>
+                        `[${msg.date}] ${msg.is_from_me ? 'Me' : msg.sender}: ${msg.content}`
                       ).join("\n") :
                       "No messages found"
                   }],
@@ -1663,15 +1663,17 @@ function isMessagesArgs(args: unknown): args is {
   message?: string;
   limit?: number;
   scheduledTime?: string;
+  startDate?: string;
+  endDate?: string;
 } {
   if (typeof args !== "object" || args === null) return false;
-  
-  const { operation, phoneNumber, message, limit, scheduledTime } = args as any;
-  
+
+  const { operation, phoneNumber, message, limit, scheduledTime, startDate, endDate } = args as any;
+
   if (!operation || !["send", "read", "schedule", "unread"].includes(operation)) {
     return false;
   }
-  
+
   // Validate required fields based on operation
   switch (operation) {
     case "send":
@@ -1686,13 +1688,15 @@ function isMessagesArgs(args: unknown): args is {
       // No additional required fields
       break;
   }
-  
+
   // Validate field types if present
   if (phoneNumber && typeof phoneNumber !== "string") return false;
   if (message && typeof message !== "string") return false;
   if (limit && typeof limit !== "number") return false;
   if (scheduledTime && typeof scheduledTime !== "string") return false;
-  
+  if (startDate && typeof startDate !== "string") return false;
+  if (endDate && typeof endDate !== "string") return false;
+
   return true;
 }
 

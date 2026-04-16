@@ -38,12 +38,13 @@
     "prepublishOnly": "bun run build"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "latest",
     "@types/node": "^22.13.4",
-    "eslint": "^8.56.0",
-    "@typescript-eslint/parser": "^7.0.1",
     "@typescript-eslint/eslint-plugin": "^7.0.1",
-    "@eslint/js": "^9.0.0"
+    "@typescript-eslint/parser": "^7.0.1",
+    "eslint": "^8.56.0"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
@@ -53,6 +54,7 @@
     "@jxa/global-type": "^1.3.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/express": "^5.0.0",
+    "better-sqlite3": "^12.9.0",
     "mcp-proxy": "^2.4.0",
     "zod": "^3.25.76"
   }

@@ -184,6 +184,14 @@ const CONTACTS_TOOL: Tool = {
           type: "number",
           description: "Number of messages to read (optional, for read and unread operations)"
         },
+        startDate: {
+          type: "string",
+          description: "Start date filter in ISO format YYYY-MM-DD (optional for read operation)"
+        },
+        endDate: {
+          type: "string",
+          description: "End date filter in ISO format YYYY-MM-DD (optional for read operation)"
+        },
         scheduledTime: {
           type: "string",
           description: "ISO string of when to send the message (required for schedule operation)"
