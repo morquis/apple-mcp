@@ -410,9 +410,9 @@ describe("mail", () => {
       .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce({
         previous: {
-          mailObjectId: "100001",
+          mailObjectId: "message-a",
           accountName: "Work",
-          mailboxPath: "Archive/Facility",
+          mailboxPath: "Archive/Operations",
           subject: "Invoice",
           sender: "sender@example.com",
           dateSent: "2026-04-20T10:00:00.000Z",
@@ -421,9 +421,9 @@ describe("mail", () => {
           flagColor: "none",
         },
         current: {
-          mailObjectId: "100001",
+          mailObjectId: "message-a",
           accountName: "Work",
-          mailboxPath: "Archive/Facility",
+          mailboxPath: "Archive/Operations",
           subject: "Invoice",
           sender: "sender@example.com",
           dateSent: "2026-04-20T10:00:00.000Z",
@@ -437,15 +437,15 @@ describe("mail", () => {
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
     const mailModule = await importMail();
-    const result = await mailModule.setMessageFlag("Work", "Archive/Facility", "100001", "orange");
+    const result = await mailModule.setMessageFlag("Work", "Archive/Operations", "message-a", "orange");
 
     expect(result.current.flagColor).toBe("orange");
     expect(result.current.flagIndex).toBe(1);
 
     const script = String(executeJXASpy.mock.calls[2]?.[0]);
     expect(script).toContain('const accountName = "Work"');
-    expect(script).toContain('const mailboxName = "Archive/Facility"');
-    expect(script).toContain('const mailObjectId = "100001"');
+    expect(script).toContain('const mailboxName = "Archive/Operations"');
+    expect(script).toContain('const mailObjectId = "message-a"');
     expect(script).toContain("const flagIndex = 1");
     expect(script).toContain("findMessageByObjectId(targetMailbox, mailObjectId)");
     expect(script).toContain("message.flagIndex = flagIndex");
@@ -457,7 +457,7 @@ describe("mail", () => {
     const mailModule = await importMail();
 
     await expect(
-      mailModule.setMessageFlag("Work", "Archive/Invoices", "100001", "pink" as any),
+      mailModule.setMessageFlag("Work", "Archive/Invoices", "message-a", "pink" as any),
     ).rejects.toThrow("Unsupported Mail flag color 'pink'");
   });
 
@@ -467,14 +467,14 @@ describe("mail", () => {
       .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce({
-        exportDirectory: "/tmp/mail-export/2026-05-02-100001-Invoice",
+        exportDirectory: "/tmp/mail-export/2026-05-02-message-a-Invoice",
         dryRun: false,
         messageReference: {
-          mailObjectId: "100001",
+          mailObjectId: "message-a",
           messageId: "invoice-1@example.com",
           accountId: "account-1",
           accountName: "Work",
-          mailboxPath: "Archive/Facility",
+          mailboxPath: "Archive/Operations",
           dateSent: "2026-04-20T10:00:00.000Z",
           sender: "sender@example.com",
           subject: "Invoice",
@@ -482,14 +482,14 @@ describe("mail", () => {
         messageFile: {
           type: "message",
           name: "Invoice.eml",
-          path: "/tmp/mail-export/2026-05-02-100001-Invoice/Invoice.eml",
+          path: "/tmp/mail-export/2026-05-02-message-a-Invoice/Invoice.eml",
           skipped: false,
         },
         attachments: [
           {
             type: "attachment",
             name: "invoice.pdf",
-            path: "/tmp/mail-export/2026-05-02-100001-Invoice/invoice.pdf",
+            path: "/tmp/mail-export/2026-05-02-message-a-Invoice/invoice.pdf",
             mimeType: "application/pdf",
             fileSize: 1024,
             downloaded: true,
@@ -498,7 +498,7 @@ describe("mail", () => {
           {
             type: "attachment",
             name: "image001.png",
-            path: "/tmp/mail-export/2026-05-02-100001-Invoice/image001.png",
+            path: "/tmp/mail-export/2026-05-02-message-a-Invoice/image001.png",
             mimeType: "image/png",
             fileSize: 20000,
             downloaded: true,
@@ -512,7 +512,7 @@ describe("mail", () => {
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
     const mailModule = await importMail();
-    const result = await mailModule.exportMessageArtifacts("Work", "Archive/Facility", "100001", {
+    const result = await mailModule.exportMessageArtifacts("Work", "Archive/Operations", "message-a", {
       exportDirectory: "/tmp/mail-export",
     });
 
@@ -521,26 +521,14 @@ describe("mail", () => {
 
     const script = String(executeJXASpy.mock.calls[2]?.[0]);
     expect(script).toContain('const accountName = "Work"');
-    expect(script).toContain('const mailboxName = "Archive/Facility"');
-    expect(script).toContain('const mailObjectId = "100001"');
+    expect(script).toContain('const mailboxName = "Archive/Operations"');
+    expect(script).toContain('const mailObjectId = "message-a"');
     expect(script).toContain('const baseExportDirectory = "/tmp/mail-export"');
-    expect(script).toContain('const attachmentMode = "all"');
-    expect(script).toContain("const skipInlineImages = false");
     expect(script).toContain('<>|,]/g, "-")');
     expect(script).toContain("message.source()");
     expect(script).toContain("Mail.save(attachment, { in: Path(attachmentPath) })");
-    expect(script).toContain("classifyAttachmentForExport");
+    expect(script).not.toContain("classifyAttachmentForExport");
     expect(script).not.toContain("Mail.messages()");
-  });
-
-  it("exportMessageArtifacts rejects unsupported attachment modes", async () => {
-    const mailModule = await importMail();
-
-    await expect(
-      mailModule.exportMessageArtifacts("Work", "Archive/Invoices", "100001", {
-        attachmentMode: "imagesOnly" as any,
-      }),
-    ).rejects.toThrow("Unsupported attachment export mode 'imagesOnly'");
   });
 
   it("moveMessage moves one scoped message by object id with dry run support", async () => {
@@ -554,7 +542,7 @@ describe("mail", () => {
         sourceMailbox: "INBOX",
         targetMailbox: "Archive/Invoices",
         messageReference: {
-          mailObjectId: "100002",
+          mailObjectId: "message-b",
           accountId: "account-1",
           accountName: "Work",
           mailboxPath: "INBOX",
@@ -568,7 +556,7 @@ describe("mail", () => {
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
     const mailModule = await importMail();
-    const result = await mailModule.moveMessage("Work", "INBOX", "100002", "Archive/Invoices", {
+    const result = await mailModule.moveMessage("Work", "INBOX", "message-b", "Archive/Invoices", {
       dryRun: true,
     });
 
@@ -578,7 +566,7 @@ describe("mail", () => {
     const script = String(executeJXASpy.mock.calls[2]?.[0]);
     expect(script).toContain('const accountName = "Work"');
     expect(script).toContain('const mailboxName = "INBOX"');
-    expect(script).toContain('const mailObjectId = "100002"');
+    expect(script).toContain('const mailObjectId = "message-b"');
     expect(script).toContain('const targetMailboxName = "Archive/Invoices"');
     expect(script).toContain("const dryRun = true");
     expect(script).toContain("findMessageByObjectId(sourceMailbox, mailObjectId)");

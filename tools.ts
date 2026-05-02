@@ -339,15 +339,6 @@ const CONTACTS_TOOL: Tool = {
           type: "boolean",
           description: "Export the full message source as an .eml file for exportMessageArtifacts. Defaults to true."
         },
-        attachmentMode: {
-          type: "string",
-          enum: ["documentsOnly", "all"],
-          description: "Attachment export filter for exportMessageArtifacts. Defaults to all, so screenshots/images are preserved for later review. documentsOnly is an explicit lossy filter."
-        },
-        skipInlineImages: {
-          type: "boolean",
-          description: "Skip likely inline/signature images during exportMessageArtifacts. Defaults to false; use only when a lossy export is explicitly intended."
-        },
         dryRun: {
           type: "boolean",
           description: "For exportMessageArtifacts or moveMessage, report what would happen without writing files or moving mail."

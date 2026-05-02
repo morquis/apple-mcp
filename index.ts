@@ -1159,8 +1159,6 @@ function initServer() {
                     exportDirectory: args.exportDirectory,
                     includeMessageSource: args.includeMessageSource,
                     includeAttachments: args.includeAttachments,
-                    attachmentMode: args.attachmentMode,
-                    skipInlineImages: args.skipInlineImages,
                     dryRun: args.dryRun,
                   },
                 );
@@ -1968,8 +1966,6 @@ function isMailArgs(args: unknown): args is {
   flagColor?: "none" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "gray";
   exportDirectory?: string;
   includeMessageSource?: boolean;
-  attachmentMode?: "documentsOnly" | "all";
-  skipInlineImages?: boolean;
   dryRun?: boolean;
   to?: string;
   subject?: string;
@@ -2007,8 +2003,6 @@ function isMailArgs(args: unknown): args is {
     flagColor,
     exportDirectory,
     includeMessageSource,
-    attachmentMode,
-    skipInlineImages,
     dryRun,
     to,
     subject,
@@ -2096,8 +2090,6 @@ function isMailArgs(args: unknown): args is {
       if (exportDirectory !== undefined && typeof exportDirectory !== "string") return false;
       if (includeMessageSource !== undefined && typeof includeMessageSource !== "boolean") return false;
       if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
-      if (attachmentMode !== undefined && !["documentsOnly", "all"].includes(attachmentMode)) return false;
-      if (skipInlineImages !== undefined && typeof skipInlineImages !== "boolean") return false;
       if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
       break;
     case "moveMessage":
@@ -2182,8 +2174,6 @@ function isMailArgs(args: unknown): args is {
   if (flagColor !== undefined && (typeof flagColor !== "string" || !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor))) return false;
   if (exportDirectory !== undefined && typeof exportDirectory !== "string") return false;
   if (includeMessageSource !== undefined && typeof includeMessageSource !== "boolean") return false;
-  if (attachmentMode !== undefined && (typeof attachmentMode !== "string" || !["documentsOnly", "all"].includes(attachmentMode))) return false;
-  if (skipInlineImages !== undefined && typeof skipInlineImages !== "boolean") return false;
   if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
   if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;

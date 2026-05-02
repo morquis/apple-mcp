@@ -163,8 +163,6 @@ interface MessageFlagUpdateResult {
   current: MessageFlagState;
 }
 
-type AttachmentExportMode = "documentsOnly" | "all";
-
 interface ExportedMessageArtifact {
   type: "message" | "attachment";
   name: string;
@@ -212,18 +210,6 @@ function normalizeMessageFlagColor(flagColor: string): MessageFlagColor {
   }
 
   throw new Error(`Unsupported Mail flag color '${flagColor}'`);
-}
-
-function normalizeAttachmentExportMode(mode: string | undefined): AttachmentExportMode {
-  if (mode === undefined || mode === "all") {
-    return "all";
-  }
-
-  if (mode === "documentsOnly") {
-    return "documentsOnly";
-  }
-
-  throw new Error(`Unsupported attachment export mode '${mode}'`);
 }
 
 interface MessageMetadataPageInfo {
@@ -385,69 +371,6 @@ function uniquePath(directory, fileName) {
 function writeUtf8File(path, text) {
   const nsString = $.NSString.alloc.initWithUTF8String(String(text));
   return Boolean(nsString.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null));
-}
-
-function extensionFromName(name) {
-  const normalized = toText(name, "").toLowerCase();
-  const dotIndex = normalized.lastIndexOf(".");
-
-  if (dotIndex < 0 || dotIndex === normalized.length - 1) {
-    return "";
-  }
-
-  return normalized.slice(dotIndex + 1);
-}
-
-function classifyAttachmentForExport(name, mimeType, fileSize, attachmentMode, skipInlineImages) {
-  const extension = extensionFromName(name);
-  const mime = toText(mimeType, "").toLowerCase();
-  const size = toNumber(fileSize, 0);
-  const lowerName = toText(name, "").toLowerCase();
-  const documentExtensions = [
-    "pdf",
-    "doc",
-    "docx",
-    "xls",
-    "xlsx",
-    "xlsm",
-    "csv",
-    "txt",
-    "rtf",
-    "rtfd",
-    "xml",
-    "zip",
-    "7z",
-    "eml",
-    "msg",
-    "ics",
-    "pages",
-    "numbers",
-    "key",
-    "odt",
-    "ods",
-  ];
-  const imageExtensions = ["jpg", "jpeg", "png", "gif", "heic", "webp", "tiff", "tif"];
-  const isImage = mime.indexOf("image/") === 0 || imageExtensions.indexOf(extension) >= 0;
-  const hasDocumentHint =
-    /(invoice|receipt|contract)/i
-      .test(lowerName);
-  const looksLikeInlineImage =
-    /^(image|logo|signature|signatur|cid|facebook|linkedin|instagram|twitter|xing|banner|icon)[-_ ]?\\d*/i
-      .test(lowerName) || size <= 300000;
-
-  if (skipInlineImages && isImage && looksLikeInlineImage && !hasDocumentHint) {
-    return { shouldExport: false, reason: "inline-image" };
-  }
-
-  if (
-    attachmentMode === "documentsOnly" &&
-    documentExtensions.indexOf(extension) < 0 &&
-    !(isImage && hasDocumentHint)
-  ) {
-    return { shouldExport: false, reason: "non-document-attachment" };
-  }
-
-  return { shouldExport: true, reason: null };
 }
 
 function getNestedMailboxes(mailboxes) {
@@ -2041,8 +1964,6 @@ async function exportMessageArtifacts(
     exportDirectory?: string;
     includeMessageSource?: boolean;
     includeAttachments?: boolean;
-    attachmentMode?: AttachmentExportMode;
-    skipInlineImages?: boolean;
     dryRun?: boolean;
   },
 ): Promise<MessageArtifactExportResult> {
@@ -2057,8 +1978,6 @@ async function exportMessageArtifacts(
     const escapedExportDirectory = escapeJXAString(opts?.exportDirectory ?? "/tmp/apple-mcp-mail-exports");
     const includeMessageSource = opts?.includeMessageSource !== false;
     const includeAttachments = opts?.includeAttachments !== false;
-    const attachmentMode = normalizeAttachmentExportMode(opts?.attachmentMode);
-    const skipInlineImages = opts?.skipInlineImages === true;
     const dryRun = opts?.dryRun === true;
 
     const script = buildMailScript(`
@@ -2069,8 +1988,6 @@ async function exportMessageArtifacts(
       const baseExportDirectory = "${escapedExportDirectory}";
       const includeMessageSource = ${includeMessageSource};
       const includeAttachments = ${includeAttachments};
-      const attachmentMode = "${attachmentMode}";
-      const skipInlineImages = ${skipInlineImages};
       const dryRun = ${dryRun};
 
       function findMessageByObjectId(mailbox, objectId) {
@@ -2170,7 +2087,6 @@ async function exportMessageArtifacts(
             safeCall(() => (typeof attachment.downloaded === "function" ? attachment.downloaded() : false), false),
             false,
           );
-          const classification = classifyAttachmentForExport(name, mimeType, fileSize, attachmentMode, skipInlineImages);
           const baseArtifact = {
             type: "attachment",
             name,
@@ -2179,15 +2095,6 @@ async function exportMessageArtifacts(
             downloaded,
             skipped: false,
           };
-
-          if (!classification.shouldExport) {
-            skippedAttachments.push({
-              ...baseArtifact,
-              skipped: true,
-              reason: classification.reason || "filtered",
-            });
-            continue;
-          }
 
           const attachmentPath = uniquePath(exportDirectory, name);
           const exported = {
