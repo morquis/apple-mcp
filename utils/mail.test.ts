@@ -526,6 +526,7 @@ describe("mail", () => {
     expect(script).toContain('const baseExportDirectory = "/tmp/mail-export"');
     expect(script).toContain('const attachmentMode = "all"');
     expect(script).toContain("const skipInlineImages = false");
+    expect(script).toContain('<>|,]/g, "-")');
     expect(script).toContain("message.source()");
     expect(script).toContain("Mail.save(attachment, { in: Path(attachmentPath) })");
     expect(script).toContain("classifyAttachmentForExport");

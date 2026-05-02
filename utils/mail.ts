@@ -323,7 +323,7 @@ function flagColorFromIndex(flagIndex) {
 
 function sanitizeFileName(value, fallback = "untitled") {
   const sanitized = toText(value, fallback)
-    .replace(/[\\\\/:*?"<>|]/g, "-")
+    .replace(/[\\\\/:*?"<>|,]/g, "-")
     .replace(/[\\r\\n\\t]+/g, " ")
     .replace(/\\s+/g, " ")
     .trim();
