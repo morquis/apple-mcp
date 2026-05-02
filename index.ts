@@ -1011,10 +1011,14 @@ function initServer() {
                   includeAttachmentNames: args.includeAttachmentNames,
                   includeHeaders: args.includeHeaders,
                   headerFilter: args.headerFilter,
+                  sort: args.sort,
+                  cursor: args.cursor,
                 };
-                const messages = await mailModule.listMessageMetadata(args.account, args.mailbox, opts);
+                const page = await mailModule.listMessageMetadata(args.account, args.mailbox, opts);
+                const messages = page.messages;
+                const pageInfo = page.pageInfo;
 
-                const textContent = messages.length > 0
+                const metadataText = messages.length > 0
                   ? messages.map((m, index) => {
                     let msgText = `=== Message ${index + 1} ===\n`;
                     msgText += `From: ${m.sender}\n`;
@@ -1038,10 +1042,16 @@ function initServer() {
                     return msgText;
                   }).join("\n")
                   : "No messages found";
+                const nextCursorText = pageInfo.nextCursor
+                  ? `\nNext Cursor: ${JSON.stringify(pageInfo.nextCursor)}`
+                  : "";
+                const textContent =
+                  `Page: returned=${pageInfo.returnedCount} scanned=${pageInfo.scannedCount} hasMore=${pageInfo.hasMore} sort=${pageInfo.sort}${nextCursorText}\n\n${metadataText}`;
 
                 return {
                   content: [{ type: "text", text: textContent }],
                   messages,
+                  pageInfo,
                   isError: false
                 };
               }
@@ -1804,6 +1814,11 @@ function isMailArgs(args: unknown): args is {
   includeAttachmentNames?: boolean;
   includeHeaders?: boolean;
   headerFilter?: string[];
+  sort?: "dateSentAsc" | "dateSentDesc";
+  cursor?: {
+    dateSent: string;
+    mailObjectId?: string;
+  };
 } {
   if (typeof args !== "object" || args === null) return false;
 
@@ -1829,6 +1844,8 @@ function isMailArgs(args: unknown): args is {
     includeAttachmentNames,
     includeHeaders,
     headerFilter,
+    sort,
+    cursor,
   } = args as any;
 
   if (!operation || ![
@@ -1883,6 +1900,16 @@ function isMailArgs(args: unknown): args is {
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
       if (includeAttachmentNames !== undefined && typeof includeAttachmentNames !== "boolean") return false;
+      if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
+      if (
+        cursor !== undefined &&
+        (
+          typeof cursor !== "object" ||
+          cursor === null ||
+          typeof cursor.dateSent !== "string" ||
+          (cursor.mailObjectId !== undefined && typeof cursor.mailObjectId !== "string")
+        )
+      ) return false;
       break;
     case "createMailbox":
       if (!account || typeof account !== "string" || !name || typeof name !== "string") return false;
@@ -1917,6 +1944,7 @@ function isMailArgs(args: unknown): args is {
   if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
   if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
   if (headerFilter !== undefined && (!Array.isArray(headerFilter) || !headerFilter.every(h => typeof h === "string"))) return false;
+  if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;
   if (newName && typeof newName !== "string") return false;

@@ -290,6 +290,26 @@ const CONTACTS_TOOL: Tool = {
           type: "boolean",
           description: "Include attachment count and attachment names without message body content (optional for messageMetadata operation)"
         },
+        sort: {
+          type: "string",
+          enum: ["dateSentDesc", "dateSentAsc"],
+          description: "Sort order for messageMetadata pagination. Defaults to dateSentDesc."
+        },
+        cursor: {
+          type: "object",
+          description: "Cursor returned by a previous messageMetadata call. Used with account, mailbox, and the same filters to fetch the next page.",
+          properties: {
+            dateSent: {
+              type: "string",
+              description: "Date of the last message from the previous page."
+            },
+            mailObjectId: {
+              type: "string",
+              description: "Apple Mail object id of the last message from the previous page."
+            }
+          },
+          required: ["dateSent"]
+        },
         includeHeaders: {
           type: "boolean",
           description: "Include email headers in the response (optional for messages operation)"

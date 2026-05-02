@@ -123,6 +123,28 @@ interface EmailMessageMetadata {
   attachmentNames?: string[];
 }
 
+interface MessageMetadataCursor {
+  dateSent: string;
+  mailObjectId?: string;
+}
+
+interface MessageMetadataPageInfo {
+  hasMore: boolean;
+  nextCursor?: MessageMetadataCursor;
+  scannedCount: number;
+  returnedCount: number;
+  sort: "dateSentAsc" | "dateSentDesc";
+  limit: number;
+  windowStart: string | null;
+  windowEnd: string | null;
+  truncated: boolean;
+}
+
+interface EmailMessageMetadataPage {
+  messages: EmailMessageMetadata[];
+  pageInfo: MessageMetadataPageInfo;
+}
+
 interface MailAccount {
   name: string;
   id: string;
@@ -554,6 +576,69 @@ function normalizeMetadataLimit(limit: number | undefined): number {
   }
 
   return Math.min(200, Math.max(0, Math.trunc(limit)));
+}
+
+function emptyMessageMetadataPage(
+  opts?: {
+    limit?: number;
+    startDate?: string;
+    endDate?: string;
+    sort?: "dateSentAsc" | "dateSentDesc";
+  },
+): EmailMessageMetadataPage {
+  const sort = opts?.sort === "dateSentAsc" ? "dateSentAsc" : "dateSentDesc";
+
+  return {
+    messages: [],
+    pageInfo: {
+      hasMore: false,
+      scannedCount: 0,
+      returnedCount: 0,
+      sort,
+      limit: normalizeMetadataLimit(opts?.limit),
+      windowStart: opts?.startDate ?? null,
+      windowEnd: opts?.endDate ?? null,
+      truncated: false,
+    },
+  };
+}
+
+function normalizeMessageMetadataPage(
+  page: EmailMessageMetadataPage,
+  limit: number,
+  sort: "dateSentAsc" | "dateSentDesc",
+  opts?: {
+    startDate?: string;
+    endDate?: string;
+  },
+): EmailMessageMetadataPage {
+  if (!page || !Array.isArray(page.messages)) {
+    return emptyMessageMetadataPage({
+      limit,
+      sort,
+      startDate: opts?.startDate,
+      endDate: opts?.endDate,
+    });
+  }
+
+  return {
+    messages: page.messages,
+    pageInfo: {
+      hasMore: page.pageInfo?.hasMore === true,
+      nextCursor: page.pageInfo?.nextCursor,
+      scannedCount: Number.isFinite(page.pageInfo?.scannedCount)
+        ? page.pageInfo.scannedCount
+        : page.messages.length,
+      returnedCount: Number.isFinite(page.pageInfo?.returnedCount)
+        ? page.pageInfo.returnedCount
+        : page.messages.length,
+      sort: page.pageInfo?.sort === "dateSentAsc" ? "dateSentAsc" : sort,
+      limit: Number.isFinite(page.pageInfo?.limit) ? page.pageInfo.limit : limit,
+      windowStart: page.pageInfo?.windowStart ?? opts?.startDate ?? null,
+      windowEnd: page.pageInfo?.windowEnd ?? opts?.endDate ?? null,
+      truncated: page.pageInfo?.truncated === true,
+    },
+  };
 }
 
 function processHeaders(messages: EmailMessage[], headerFilter?: string[]): EmailMessage[] {
@@ -1249,16 +1334,19 @@ async function listMessageMetadata(
     includeAttachmentNames?: boolean;
     includeHeaders?: boolean;
     headerFilter?: string[];
+    sort?: "dateSentAsc" | "dateSentDesc";
+    cursor?: MessageMetadataCursor;
   },
-): Promise<EmailMessageMetadata[]> {
+): Promise<EmailMessageMetadataPage> {
   try {
     if (!(await checkMailAccess())) {
-      return [];
+      return emptyMessageMetadataPage(opts);
     }
 
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
-    const limitLiteral = String(normalizeMetadataLimit(opts?.limit));
+    const normalizedLimit = normalizeMetadataLimit(opts?.limit);
+    const limitLiteral = String(normalizedLimit);
     const startDateLiteral =
       opts?.startDate === undefined ? "null" : `"${escapeJXAString(opts.startDate)}"`;
     const endDateLiteral =
@@ -1266,6 +1354,13 @@ async function listMessageMetadata(
     const unreadOnly = opts?.unreadOnly === true;
     const includeAttachmentNames = opts?.includeAttachmentNames === true;
     const includeHeaders = opts?.includeHeaders === true;
+    const sort = opts?.sort === "dateSentAsc" ? "dateSentAsc" : "dateSentDesc";
+    const cursorLiteral = opts?.cursor
+      ? JSON.stringify({
+        dateSent: opts.cursor.dateSent,
+        mailObjectId: opts.cursor.mailObjectId ?? null,
+      })
+      : "null";
 
     const script = buildMailScript(`
       const Mail = Application("Mail");
@@ -1277,10 +1372,81 @@ async function listMessageMetadata(
       const includeHeaders = ${includeHeaders};
       const startDate = ${startDateLiteral};
       const endDate = ${endDateLiteral};
+      const sort = "${sort}";
+      const cursor = ${cursorLiteral};
+
+      function emptyPage() {
+        return {
+          messages: [],
+          pageInfo: {
+            hasMore: false,
+            scannedCount: 0,
+            returnedCount: 0,
+            sort,
+            limit,
+            windowStart: startDate,
+            windowEnd: endDate,
+            truncated: false,
+          },
+        };
+      }
+
+      function messageTimestamp(message) {
+        const dateValue = safeCall(() => message.dateSent(), null);
+        const messageDate = dateValue === null ? null : new Date(dateValue);
+        return messageDate === null || Number.isNaN(messageDate.getTime())
+          ? 0
+          : messageDate.getTime();
+      }
+
+      function messageObjectId(message) {
+        return toText(safeCall(() => message.id(), null), "");
+      }
+
+      function compareMessages(a, b) {
+        const aTime = messageTimestamp(a);
+        const bTime = messageTimestamp(b);
+        if (aTime !== bTime) {
+          return sort === "dateSentAsc" ? aTime - bTime : bTime - aTime;
+        }
+
+        return messageObjectId(a).localeCompare(messageObjectId(b));
+      }
+
+      function isAfterCursor(message) {
+        if (cursor === null || !cursor.dateSent) {
+          return true;
+        }
+
+        const cursorTime = new Date(cursor.dateSent).getTime();
+        if (Number.isNaN(cursorTime)) {
+          return true;
+        }
+
+        const messageTime = messageTimestamp(message);
+        if (messageTime !== cursorTime) {
+          return sort === "dateSentAsc"
+            ? messageTime > cursorTime
+            : messageTime < cursorTime;
+        }
+
+        if (!cursor.mailObjectId) {
+          return false;
+        }
+
+        return messageObjectId(message).localeCompare(String(cursor.mailObjectId)) > 0;
+      }
+
+      function buildCursor(message) {
+        return {
+          dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
+          mailObjectId: messageObjectId(message),
+        };
+      }
 
       const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
       if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
-        return JSON.stringify([]);
+        return JSON.stringify(emptyPage());
       }
 
       let targetMailbox = null;
@@ -1297,7 +1463,7 @@ async function listMessageMetadata(
         );
       }
       if (!targetMailbox) {
-        return JSON.stringify([]);
+        return JSON.stringify(emptyPage());
       }
 
       let messages;
@@ -1334,28 +1500,54 @@ async function listMessageMetadata(
         });
       }
 
-      messages = messages.slice(0, limit);
+      messages = messages.sort(compareMessages);
+      const scannedCount = messages.length;
+      messages = messages.filter(isAfterCursor);
+
+      const pageMessages = messages.slice(0, limit);
+      const hasMore = messages.length > limit;
 
       const resolvedMailboxName = mailboxPathFromContainer(targetMailbox, mailboxName, accountName);
-      const result = messages.map((message) =>
+      const result = pageMessages.map((message) =>
         buildMessageMetadata(message, accountMatches[0], resolvedMailboxName, includeAttachmentNames),
       );
 
       if (includeHeaders) {
         for (let i = 0; i < result.length; i += 1) {
-          result[i].headers = getHeaders(messages[i]);
+          result[i].headers = getHeaders(pageMessages[i]);
         }
       }
 
-      return JSON.stringify(result);
+      const pageInfo = {
+        hasMore,
+        scannedCount,
+        returnedCount: result.length,
+        sort,
+        limit,
+        windowStart: startDate,
+        windowEnd: endDate,
+        truncated: hasMore,
+      };
+
+      if (hasMore && pageMessages.length > 0) {
+        pageInfo.nextCursor = buildCursor(pageMessages[pageMessages.length - 1]);
+      }
+
+      return JSON.stringify({ messages: result, pageInfo });
     `);
 
-    const messages = await executeJXA<EmailMessageMetadata[]>(script);
-    const resolvedMessages = Array.isArray(messages) ? messages : [];
+    const page = await executeJXA<EmailMessageMetadataPage>(script);
+    const resolvedPage = normalizeMessageMetadataPage(page, normalizedLimit, sort, opts);
 
     return includeHeaders
-      ? processHeaders(resolvedMessages as EmailMessage[], opts?.headerFilter) as EmailMessageMetadata[]
-      : resolvedMessages;
+      ? {
+        ...resolvedPage,
+        messages: processHeaders(
+          resolvedPage.messages as EmailMessage[],
+          opts?.headerFilter,
+        ) as EmailMessageMetadata[],
+      }
+      : resolvedPage;
   } catch (error) {
     throw toMailError("Error listing message metadata", error);
   }

@@ -237,7 +237,63 @@ describe("mail", () => {
     executeJXASpy
       .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce(true as never)
-      .mockResolvedValueOnce([
+      .mockResolvedValueOnce({
+        messages: [
+          {
+            subject: "Invoice",
+            sender: "billing@example.com",
+            dateSent: "2026-04-20T10:00:00.000Z",
+            isRead: true,
+            mailbox: "Archive/Invoices",
+            messageLink: "[Invoice](message:%3Cinvoice-1%40example.com%3E)",
+            messageReference: {
+              mailObjectId: "12345",
+              messageId: "invoice-1@example.com",
+              accountId: "account-1",
+              accountName: "Work",
+              mailboxPath: "Archive/Invoices",
+              dateSent: "2026-04-20T10:00:00.000Z",
+              dateReceived: "2026-04-20T10:01:00.000Z",
+              sender: "billing@example.com",
+              subject: "Invoice",
+              messageSize: 4096,
+            },
+            attachmentCount: 1,
+            attachmentNames: ["invoice.pdf"],
+          },
+        ],
+        pageInfo: {
+          hasMore: true,
+          nextCursor: {
+            dateSent: "2026-04-20T10:00:00.000Z",
+            mailObjectId: "12345",
+          },
+          scannedCount: 3,
+          returnedCount: 1,
+          sort: "dateSentAsc",
+          limit: 1,
+          windowStart: null,
+          windowEnd: null,
+          truncated: true,
+        },
+      } as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.listMessageMetadata("Work", "Archive/Invoices", {
+      limit: 1,
+      includeAttachmentNames: true,
+      sort: "dateSentAsc",
+      cursor: {
+        dateSent: "2026-04-19T10:00:00.000Z",
+        mailObjectId: "11111",
+      },
+    });
+
+    expect(result).toEqual({
+      messages: [
         {
           subject: "Invoice",
           sender: "billing@example.com",
@@ -260,45 +316,30 @@ describe("mail", () => {
           attachmentCount: 1,
           attachmentNames: ["invoice.pdf"],
         },
-      ] as never);
-
-    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
-    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
-
-    const mailModule = await importMail();
-    const result = await mailModule.listMessageMetadata("Work", "Archive/Invoices", {
-      limit: 10,
-      includeAttachmentNames: true,
-    });
-
-    expect(result).toEqual([
-      {
-        subject: "Invoice",
-        sender: "billing@example.com",
-        dateSent: "2026-04-20T10:00:00.000Z",
-        isRead: true,
-        mailbox: "Archive/Invoices",
-        messageLink: "[Invoice](message:%3Cinvoice-1%40example.com%3E)",
-        messageReference: {
-          mailObjectId: "12345",
-          messageId: "invoice-1@example.com",
-          accountId: "account-1",
-          accountName: "Work",
-          mailboxPath: "Archive/Invoices",
+      ],
+      pageInfo: {
+        hasMore: true,
+        nextCursor: {
           dateSent: "2026-04-20T10:00:00.000Z",
-          dateReceived: "2026-04-20T10:01:00.000Z",
-          sender: "billing@example.com",
-          subject: "Invoice",
-          messageSize: 4096,
+          mailObjectId: "12345",
         },
-        attachmentCount: 1,
-        attachmentNames: ["invoice.pdf"],
+        scannedCount: 3,
+        returnedCount: 1,
+        sort: "dateSentAsc",
+        limit: 1,
+        windowStart: null,
+        windowEnd: null,
+        truncated: true,
       },
-    ]);
+    });
 
     const script = String(executeJXASpy.mock.calls[2]?.[0]);
     expect(script).toContain('const mailboxName = "Archive/Invoices"');
-    expect(script).toContain("const limit = 10");
+    expect(script).toContain("const limit = 1");
+    expect(script).toContain('const sort = "dateSentAsc"');
+    expect(script).toContain('"mailObjectId":"11111"');
+    expect(script).toContain("messages = messages.sort(compareMessages)");
+    expect(script).toContain("const hasMore = messages.length > limit");
     expect(script).toContain("const includeAttachmentNames = true");
     expect(script).toContain("buildMessageMetadata(message, accountMatches[0], resolvedMailboxName, includeAttachmentNames)");
     expect(script).toContain("message.messageId()");
