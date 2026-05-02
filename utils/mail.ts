@@ -97,6 +97,19 @@ interface EmailMessage {
   messageLink?: string;
 }
 
+interface MessageReference {
+  mailObjectId: string;
+  messageId?: string;
+  accountId: string;
+  accountName: string;
+  mailboxPath: string;
+  dateSent?: string;
+  dateReceived?: string;
+  sender: string;
+  subject: string;
+  messageSize?: number;
+}
+
 interface EmailMessageMetadata {
   subject: string;
   sender: string;
@@ -105,6 +118,7 @@ interface EmailMessageMetadata {
   mailbox: string;
   headers?: string;
   messageLink?: string;
+  messageReference?: MessageReference;
   attachmentCount?: number;
   attachmentNames?: string[];
 }
@@ -276,6 +290,65 @@ function buildAttachment(attachment) {
   };
 }
 
+function normalizeMessageId(messageId) {
+  const text = toText(messageId, "").trim();
+
+  if (text.length === 0) {
+    return "";
+  }
+
+  return text.replace(/^<+/, "").replace(/>+$/, "");
+}
+
+function createMessageLinkFromMessageId(messageId, subject) {
+  const normalizedMessageId = normalizeMessageId(messageId);
+
+  if (normalizedMessageId.length === 0) {
+    return null;
+  }
+
+  return "[" + subject + "](message:" + encodeURIComponent("<" + normalizedMessageId + ">") + ")";
+}
+
+function buildMessageReference(message, account, mailboxPath, subject, sender, dateSent) {
+  const messageId = normalizeMessageId(
+    safeCall(() => (typeof message.messageId === "function" ? message.messageId() : null), null),
+  );
+  const dateReceived = toISO(
+    safeCall(() => (typeof message.dateReceived === "function" ? message.dateReceived() : null), null),
+    null,
+  );
+  const messageSizeValue = safeCall(
+    () => (typeof message.messageSize === "function" ? message.messageSize() : null),
+    null,
+  );
+  const messageSize = messageSizeValue === null ? null : toNumber(messageSizeValue, null);
+
+  const reference = {
+    mailObjectId: toText(safeCall(() => message.id(), null), ""),
+    accountId: toText(safeCall(() => account.id(), null), ""),
+    accountName: toText(safeCall(() => account.name(), null), ""),
+    mailboxPath,
+    dateSent,
+    sender,
+    subject,
+  };
+
+  if (messageId.length > 0) {
+    reference.messageId = messageId;
+  }
+
+  if (dateReceived !== null) {
+    reference.dateReceived = dateReceived;
+  }
+
+  if (messageSize !== null) {
+    reference.messageSize = messageSize;
+  }
+
+  return reference;
+}
+
 function buildMessage(message, mailboxName, includeAttachments, includeHeaders) {
   const result = {
     subject: toText(safeCall(() => message.subject(), null), "No subject"),
@@ -300,13 +373,22 @@ function buildMessage(message, mailboxName, includeAttachments, includeHeaders) 
   return result;
 }
 
-function buildMessageMetadata(message, mailboxName, includeAttachmentNames) {
+function buildMessageMetadata(message, account, mailboxName, includeAttachmentNames) {
+  const subject = toText(safeCall(() => message.subject(), null), "No subject");
+  const sender = toText(safeCall(() => message.sender(), null), "Unknown sender");
+  const dateSent = toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()");
+  const messageId = safeCall(
+    () => (typeof message.messageId === "function" ? message.messageId() : null),
+    null,
+  );
   const result = {
-    subject: toText(safeCall(() => message.subject(), null), "No subject"),
-    sender: toText(safeCall(() => message.sender(), null), "Unknown sender"),
-    dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
+    subject,
+    sender,
+    dateSent,
     isRead: toBoolean(safeCall(() => message.readStatus(), false), false),
     mailbox: mailboxName,
+    messageLink: createMessageLinkFromMessageId(messageId, subject),
+    messageReference: buildMessageReference(message, account, mailboxName, subject, sender, dateSent),
   };
 
   if (includeAttachmentNames) {
@@ -1256,7 +1338,7 @@ async function listMessageMetadata(
 
       const resolvedMailboxName = mailboxPathFromContainer(targetMailbox, mailboxName, accountName);
       const result = messages.map((message) =>
-        buildMessageMetadata(message, resolvedMailboxName, includeAttachmentNames),
+        buildMessageMetadata(message, accountMatches[0], resolvedMailboxName, includeAttachmentNames),
       );
 
       if (includeHeaders) {

@@ -1022,6 +1022,13 @@ function initServer() {
                     msgText += `Subject: ${m.subject}\n`;
                     msgText += `Read: ${m.isRead ? "Yes" : "No"}\n`;
                     msgText += `Mailbox: ${m.mailbox}\n`;
+                    if (m.messageReference) {
+                      msgText += `Reference: mailObjectId=${m.messageReference.mailObjectId}`;
+                      if (m.messageReference.messageId) {
+                        msgText += ` messageId=${m.messageReference.messageId}`;
+                      }
+                      msgText += "\n";
+                    }
                     if (m.messageLink) {
                       msgText += `Link: ${m.messageLink}\n`;
                     }

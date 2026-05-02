@@ -244,6 +244,19 @@ describe("mail", () => {
           dateSent: "2026-04-20T10:00:00.000Z",
           isRead: true,
           mailbox: "Archive/Invoices",
+          messageLink: "[Invoice](message:%3Cinvoice-1%40example.com%3E)",
+          messageReference: {
+            mailObjectId: "12345",
+            messageId: "invoice-1@example.com",
+            accountId: "account-1",
+            accountName: "Work",
+            mailboxPath: "Archive/Invoices",
+            dateSent: "2026-04-20T10:00:00.000Z",
+            dateReceived: "2026-04-20T10:01:00.000Z",
+            sender: "billing@example.com",
+            subject: "Invoice",
+            messageSize: 4096,
+          },
           attachmentCount: 1,
           attachmentNames: ["invoice.pdf"],
         },
@@ -265,6 +278,19 @@ describe("mail", () => {
         dateSent: "2026-04-20T10:00:00.000Z",
         isRead: true,
         mailbox: "Archive/Invoices",
+        messageLink: "[Invoice](message:%3Cinvoice-1%40example.com%3E)",
+        messageReference: {
+          mailObjectId: "12345",
+          messageId: "invoice-1@example.com",
+          accountId: "account-1",
+          accountName: "Work",
+          mailboxPath: "Archive/Invoices",
+          dateSent: "2026-04-20T10:00:00.000Z",
+          dateReceived: "2026-04-20T10:01:00.000Z",
+          sender: "billing@example.com",
+          subject: "Invoice",
+          messageSize: 4096,
+        },
         attachmentCount: 1,
         attachmentNames: ["invoice.pdf"],
       },
@@ -274,7 +300,10 @@ describe("mail", () => {
     expect(script).toContain('const mailboxName = "Archive/Invoices"');
     expect(script).toContain("const limit = 10");
     expect(script).toContain("const includeAttachmentNames = true");
-    expect(script).toContain("buildMessageMetadata(message, resolvedMailboxName, includeAttachmentNames)");
+    expect(script).toContain("buildMessageMetadata(message, accountMatches[0], resolvedMailboxName, includeAttachmentNames)");
+    expect(script).toContain("message.messageId()");
+    expect(script).toContain("message.id()");
+    expect(script).toContain("message.messageSize()");
     expect(script).not.toContain("buildMessage(message, resolvedMailboxName");
   });
 });
