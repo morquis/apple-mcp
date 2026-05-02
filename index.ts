@@ -1056,6 +1056,65 @@ function initServer() {
                 };
               }
 
+              case "searchMetadata": {
+                if (!args.account || !args.mailbox || !args.searchTerm || !args.startDate || !args.endDate) {
+                  throw new Error("Account, mailbox, searchTerm, startDate, and endDate are required for searchMetadata operation");
+                }
+                const opts = {
+                  limit: args.limit,
+                  unreadOnly: args.unreadOnly,
+                  startDate: args.startDate,
+                  endDate: args.endDate,
+                  includeAttachmentNames: args.includeAttachmentNames,
+                  includeHeaders: args.includeHeaders,
+                  headerFilter: args.headerFilter,
+                  sort: args.sort,
+                  cursor: args.cursor,
+                  searchFields: args.searchFields,
+                };
+                const page = await mailModule.searchMessageMetadata(args.account, args.mailbox, args.searchTerm, opts);
+                const messages = page.messages;
+                const pageInfo = page.pageInfo;
+
+                const metadataText = messages.length > 0
+                  ? messages.map((m, index) => {
+                    let msgText = `=== Message ${index + 1} ===\n`;
+                    msgText += `From: ${m.sender}\n`;
+                    msgText += `Date: ${m.dateSent}\n`;
+                    msgText += `Subject: ${m.subject}\n`;
+                    msgText += `Read: ${m.isRead ? "Yes" : "No"}\n`;
+                    msgText += `Mailbox: ${m.mailbox}\n`;
+                    if (m.messageReference) {
+                      msgText += `Reference: mailObjectId=${m.messageReference.mailObjectId}`;
+                      if (m.messageReference.messageId) {
+                        msgText += ` messageId=${m.messageReference.messageId}`;
+                      }
+                      msgText += "\n";
+                    }
+                    if (m.messageLink) {
+                      msgText += `Link: ${m.messageLink}\n`;
+                    }
+                    if (args.includeAttachmentNames && m.attachmentNames) {
+                      msgText += `Attachments (${m.attachmentCount ?? m.attachmentNames.length}): ${m.attachmentNames.join(", ") || "none"}\n`;
+                    }
+                    return msgText;
+                  }).join("\n")
+                  : "No messages found";
+                const nextCursorText = pageInfo.nextCursor
+                  ? `\nNext Cursor: ${JSON.stringify(pageInfo.nextCursor)}`
+                  : "";
+                const textContent =
+                  `Search: ${args.searchTerm} fields=${(pageInfo.searchFields ?? []).join(",")}\n` +
+                  `Page: returned=${pageInfo.returnedCount} scanned=${pageInfo.scannedCount} hasMore=${pageInfo.hasMore} sort=${pageInfo.sort}${nextCursorText}\n\n${metadataText}`;
+
+                return {
+                  content: [{ type: "text", text: textContent }],
+                  messages,
+                  pageInfo,
+                  isError: false
+                };
+              }
+
               case "createMailbox": {
                 const result = await mailModule.createMailbox(
                   args.account!,
@@ -1781,6 +1840,7 @@ function isMailArgs(args: unknown): args is {
     | "unread"
     | "latest"
     | "search"
+    | "searchMetadata"
     | "send"
     | "mailboxes"
     | "accounts"
@@ -1805,6 +1865,7 @@ function isMailArgs(args: unknown): args is {
   startDate?: string;
   endDate?: string;
   searchTerm?: string;
+  searchFields?: Array<"subject" | "sender" | "attachmentNames">;
   to?: string;
   subject?: string;
   body?: string;
@@ -1835,6 +1896,7 @@ function isMailArgs(args: unknown): args is {
     startDate,
     endDate,
     searchTerm,
+    searchFields,
     to,
     subject,
     body,
@@ -1852,6 +1914,7 @@ function isMailArgs(args: unknown): args is {
     "unread",
     "latest",
     "search",
+    "searchMetadata",
     "send",
     "mailboxes",
     "accounts",
@@ -1873,6 +1936,32 @@ function isMailArgs(args: unknown): args is {
   switch (operation) {
     case "search":
       if (!searchTerm || typeof searchTerm !== "string") return false;
+      break;
+    case "searchMetadata":
+      if (!account || typeof account !== "string") return false;
+      if (!mailbox || typeof mailbox !== "string") return false;
+      if (!searchTerm || typeof searchTerm !== "string") return false;
+      if (!startDate || typeof startDate !== "string") return false;
+      if (!endDate || typeof endDate !== "string") return false;
+      if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
+      if (includeAttachmentNames !== undefined && typeof includeAttachmentNames !== "boolean") return false;
+      if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
+      if (
+        cursor !== undefined &&
+        (
+          typeof cursor !== "object" ||
+          cursor === null ||
+          typeof cursor.dateSent !== "string" ||
+          (cursor.mailObjectId !== undefined && typeof cursor.mailObjectId !== "string")
+        )
+      ) return false;
+      if (
+        searchFields !== undefined &&
+        (
+          !Array.isArray(searchFields) ||
+          !searchFields.every((field) => ["subject", "sender", "attachmentNames"].includes(field))
+        )
+      ) return false;
       break;
     case "send":
       if (!to || typeof to !== "string" ||
@@ -1944,6 +2033,7 @@ function isMailArgs(args: unknown): args is {
   if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
   if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
   if (headerFilter !== undefined && (!Array.isArray(headerFilter) || !headerFilter.every(h => typeof h === "string"))) return false;
+  if (searchFields !== undefined && (!Array.isArray(searchFields) || !searchFields.every(field => ["subject", "sender", "attachmentNames"].includes(field)))) return false;
   if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;

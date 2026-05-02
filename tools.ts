@@ -212,17 +212,18 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', and 'messageMetadata', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
+    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', and 'searchMetadata', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'latest', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
           enum: [
             "unread",
             "latest",
             "search",
+            "searchMetadata",
             "send",
             "mailboxes",
             "accounts",
@@ -260,7 +261,15 @@ const CONTACTS_TOOL: Tool = {
         },
         searchTerm: {
           type: "string",
-          description: "Text to search for in emails (required for search operation)"
+          description: "Text to search for in emails. Required for search and searchMetadata."
+        },
+        searchFields: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["subject", "sender", "attachmentNames"]
+          },
+          description: "Metadata fields searched by searchMetadata. Defaults to subject and sender. attachmentNames stays metadata-only but may read attachment names."
         },
         to: {
           type: "string",

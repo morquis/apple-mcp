@@ -128,6 +128,8 @@ interface MessageMetadataCursor {
   mailObjectId?: string;
 }
 
+type MessageMetadataSearchField = "subject" | "sender" | "attachmentNames";
+
 interface MessageMetadataPageInfo {
   hasMore: boolean;
   nextCursor?: MessageMetadataCursor;
@@ -138,6 +140,8 @@ interface MessageMetadataPageInfo {
   windowStart: string | null;
   windowEnd: string | null;
   truncated: boolean;
+  searchTerm?: string | null;
+  searchFields?: MessageMetadataSearchField[];
 }
 
 interface EmailMessageMetadataPage {
@@ -578,15 +582,31 @@ function normalizeMetadataLimit(limit: number | undefined): number {
   return Math.min(200, Math.max(0, Math.trunc(limit)));
 }
 
+function normalizeMetadataSearchFields(
+  fields: MessageMetadataSearchField[] | undefined,
+): MessageMetadataSearchField[] {
+  if (!Array.isArray(fields) || fields.length === 0) {
+    return ["subject", "sender"];
+  }
+
+  const allowed = new Set<MessageMetadataSearchField>(["subject", "sender", "attachmentNames"]);
+  const normalized = fields.filter((field): field is MessageMetadataSearchField => allowed.has(field));
+
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : ["subject", "sender"];
+}
+
 function emptyMessageMetadataPage(
   opts?: {
     limit?: number;
     startDate?: string;
     endDate?: string;
     sort?: "dateSentAsc" | "dateSentDesc";
+    searchTerm?: string;
+    searchFields?: MessageMetadataSearchField[];
   },
 ): EmailMessageMetadataPage {
   const sort = opts?.sort === "dateSentAsc" ? "dateSentAsc" : "dateSentDesc";
+  const searchFields = normalizeMetadataSearchFields(opts?.searchFields);
 
   return {
     messages: [],
@@ -599,6 +619,8 @@ function emptyMessageMetadataPage(
       windowStart: opts?.startDate ?? null,
       windowEnd: opts?.endDate ?? null,
       truncated: false,
+      searchTerm: opts?.searchTerm ?? null,
+      searchFields,
     },
   };
 }
@@ -610,6 +632,8 @@ function normalizeMessageMetadataPage(
   opts?: {
     startDate?: string;
     endDate?: string;
+    searchTerm?: string;
+    searchFields?: MessageMetadataSearchField[];
   },
 ): EmailMessageMetadataPage {
   if (!page || !Array.isArray(page.messages)) {
@@ -618,8 +642,14 @@ function normalizeMessageMetadataPage(
       sort,
       startDate: opts?.startDate,
       endDate: opts?.endDate,
+      searchTerm: opts?.searchTerm,
+      searchFields: opts?.searchFields,
     });
   }
+
+  const searchFields = normalizeMetadataSearchFields(
+    page.pageInfo?.searchFields ?? opts?.searchFields,
+  );
 
   return {
     messages: page.messages,
@@ -637,6 +667,8 @@ function normalizeMessageMetadataPage(
       windowStart: page.pageInfo?.windowStart ?? opts?.startDate ?? null,
       windowEnd: page.pageInfo?.windowEnd ?? opts?.endDate ?? null,
       truncated: page.pageInfo?.truncated === true,
+      searchTerm: page.pageInfo?.searchTerm ?? opts?.searchTerm ?? null,
+      searchFields,
     },
   };
 }
@@ -1336,6 +1368,8 @@ async function listMessageMetadata(
     headerFilter?: string[];
     sort?: "dateSentAsc" | "dateSentDesc";
     cursor?: MessageMetadataCursor;
+    searchTerm?: string;
+    searchFields?: MessageMetadataSearchField[];
   },
 ): Promise<EmailMessageMetadataPage> {
   try {
@@ -1352,9 +1386,13 @@ async function listMessageMetadata(
     const endDateLiteral =
       opts?.endDate === undefined ? "null" : `"${escapeJXAString(opts.endDate)}"`;
     const unreadOnly = opts?.unreadOnly === true;
-    const includeAttachmentNames = opts?.includeAttachmentNames === true;
+    const searchFields = normalizeMetadataSearchFields(opts?.searchFields);
+    const includeAttachmentNames = opts?.includeAttachmentNames === true || searchFields.includes("attachmentNames");
     const includeHeaders = opts?.includeHeaders === true;
     const sort = opts?.sort === "dateSentAsc" ? "dateSentAsc" : "dateSentDesc";
+    const searchTermLiteral =
+      opts?.searchTerm === undefined ? "null" : `"${escapeJXAString(opts.searchTerm)}"`;
+    const searchFieldsLiteral = JSON.stringify(searchFields);
     const cursorLiteral = opts?.cursor
       ? JSON.stringify({
         dateSent: opts.cursor.dateSent,
@@ -1373,6 +1411,8 @@ async function listMessageMetadata(
       const startDate = ${startDateLiteral};
       const endDate = ${endDateLiteral};
       const sort = "${sort}";
+      const searchTerm = ${searchTermLiteral};
+      const searchFields = ${searchFieldsLiteral};
       const cursor = ${cursorLiteral};
 
       function emptyPage() {
@@ -1387,6 +1427,8 @@ async function listMessageMetadata(
             windowStart: startDate,
             windowEnd: endDate,
             truncated: false,
+            searchTerm,
+            searchFields,
           },
         };
       }
@@ -1442,6 +1484,38 @@ async function listMessageMetadata(
           dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
           mailObjectId: messageObjectId(message),
         };
+      }
+
+      function searchFieldEnabled(field) {
+        return Array.isArray(searchFields) && searchFields.indexOf(field) >= 0;
+      }
+
+      function messageMatchesSearch(message) {
+        if (searchTerm === null || searchTerm.length === 0) {
+          return true;
+        }
+
+        const normalizedSearchTerm = searchTerm.toLowerCase();
+        const values = [];
+
+        if (searchFieldEnabled("subject")) {
+          values.push(toText(safeCall(() => message.subject(), null), ""));
+        }
+
+        if (searchFieldEnabled("sender")) {
+          values.push(toText(safeCall(() => message.sender(), null), ""));
+        }
+
+        if (searchFieldEnabled("attachmentNames")) {
+          const attachments = safeCall(() => message.mailAttachments(), []);
+          if (Array.isArray(attachments)) {
+            for (const attachment of attachments) {
+              values.push(toText(safeCall(() => attachment.name(), null), ""));
+            }
+          }
+        }
+
+        return values.some((value) => value.toLowerCase().includes(normalizedSearchTerm));
       }
 
       const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
@@ -1500,6 +1574,10 @@ async function listMessageMetadata(
         });
       }
 
+      if (searchTerm !== null && searchTerm.length > 0) {
+        messages = messages.filter(messageMatchesSearch);
+      }
+
       messages = messages.sort(compareMessages);
       const scannedCount = messages.length;
       messages = messages.filter(isAfterCursor);
@@ -1527,6 +1605,8 @@ async function listMessageMetadata(
         windowStart: startDate,
         windowEnd: endDate,
         truncated: hasMore,
+        searchTerm,
+        searchFields,
       };
 
       if (hasMore && pageMessages.length > 0) {
@@ -1551,6 +1631,42 @@ async function listMessageMetadata(
   } catch (error) {
     throw toMailError("Error listing message metadata", error);
   }
+}
+
+async function searchMessageMetadata(
+  accountName: string,
+  mailboxName: string,
+  searchTerm: string,
+  opts?: {
+    limit?: number;
+    unreadOnly?: boolean;
+    startDate?: string;
+    endDate?: string;
+    includeAttachmentNames?: boolean;
+    includeHeaders?: boolean;
+    headerFilter?: string[];
+    sort?: "dateSentAsc" | "dateSentDesc";
+    cursor?: MessageMetadataCursor;
+    searchFields?: MessageMetadataSearchField[];
+  },
+): Promise<EmailMessageMetadataPage> {
+  if (!opts?.startDate || !opts?.endDate) {
+    throw new Error("startDate and endDate are required for metadata search");
+  }
+
+  if (!searchTerm || searchTerm.trim().length === 0) {
+    return emptyMessageMetadataPage({
+      ...opts,
+      searchTerm,
+      searchFields: opts?.searchFields,
+    });
+  }
+
+  return listMessageMetadata(accountName, mailboxName, {
+    ...opts,
+    searchTerm,
+    searchFields: opts?.searchFields,
+  });
 }
 
 async function createMailbox(
@@ -1742,6 +1858,7 @@ const mail = {
   getAccountMailboxTree,
   listMessages,
   listMessageMetadata,
+  searchMessageMetadata,
   createMailbox,
   deleteMailbox,
   renameMailbox,
@@ -1765,6 +1882,7 @@ export {
   listMessages,
   moveMailbox,
   renameMailbox,
+  searchMessageMetadata,
   searchMails,
   sendMail,
 };

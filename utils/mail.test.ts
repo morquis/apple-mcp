@@ -275,6 +275,8 @@ describe("mail", () => {
           windowStart: null,
           windowEnd: null,
           truncated: true,
+          searchTerm: null,
+          searchFields: ["subject", "sender"],
         },
       } as never);
 
@@ -330,6 +332,8 @@ describe("mail", () => {
         windowStart: null,
         windowEnd: null,
         truncated: true,
+        searchTerm: null,
+        searchFields: ["subject", "sender"],
       },
     });
 
@@ -346,5 +350,56 @@ describe("mail", () => {
     expect(script).toContain("message.id()");
     expect(script).toContain("message.messageSize()");
     expect(script).not.toContain("buildMessage(message, resolvedMailboxName");
+  });
+
+  it("searchMessageMetadata searches scoped metadata fields with a date window", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce({
+        messages: [],
+        pageInfo: {
+          hasMore: false,
+          scannedCount: 0,
+          returnedCount: 0,
+          sort: "dateSentDesc",
+          limit: 25,
+          windowStart: "2026-01-01T00:00:00.000Z",
+          windowEnd: "2026-02-01T00:00:00.000Z",
+          truncated: false,
+          searchTerm: "invoice",
+          searchFields: ["subject", "attachmentNames"],
+        },
+      } as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.searchMessageMetadata("Work", "Archive/Invoices", "invoice", {
+      startDate: "2026-01-01T00:00:00.000Z",
+      endDate: "2026-02-01T00:00:00.000Z",
+      searchFields: ["subject", "attachmentNames"],
+    });
+
+    expect(result.pageInfo.searchTerm).toBe("invoice");
+    expect(result.pageInfo.searchFields).toEqual(["subject", "attachmentNames"]);
+
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const searchTerm = "invoice"');
+    expect(script).toContain('const searchFields = ["subject","attachmentNames"]');
+    expect(script).toContain("messageMatchesSearch");
+    expect(script).toContain("message.mailAttachments()");
+    expect(script).toContain("messages = messages.filter(messageMatchesSearch)");
+    expect(script).not.toContain("buildMessage(message, resolvedMailboxName");
+  });
+
+  it("searchMessageMetadata requires an explicit date window", async () => {
+    const mailModule = await importMail();
+
+    await expect(mailModule.searchMessageMetadata("Work", "Archive/Invoices", "invoice")).rejects.toThrow(
+      "startDate and endDate are required for metadata search",
+    );
   });
 });

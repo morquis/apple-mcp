@@ -9,6 +9,7 @@ const MAIL_DISPATCH_OPERATIONS = [
   "unread",
   "latest",
   "search",
+  "searchMetadata",
   "send",
   "mailboxes",
   "accounts",
