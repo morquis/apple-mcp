@@ -11,6 +11,7 @@ const MAIL_DISPATCH_OPERATIONS = [
   "search",
   "searchMetadata",
   "setMessageFlag",
+  "exportMessageArtifacts",
   "send",
   "mailboxes",
   "accounts",

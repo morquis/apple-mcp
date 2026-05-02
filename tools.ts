@@ -212,19 +212,20 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', and 'setMessageFlag', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
+    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, export selected message artifacts, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', 'setMessageFlag', and 'exportMessageArtifacts', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
           enum: [
             "unread",
             "latest",
             "search",
             "searchMetadata",
             "setMessageFlag",
+            "exportMessageArtifacts",
             "send",
             "mailboxes",
             "accounts",
@@ -294,7 +295,7 @@ const CONTACTS_TOOL: Tool = {
         },
         includeAttachments: {
           type: "boolean",
-          description: "Include attachment information in the response (optional for messages operation)"
+          description: "Include attachment information in the response (optional for messages operation), or export all downloaded attachments for exportMessageArtifacts (defaults to true there)."
         },
         includeAttachmentNames: {
           type: "boolean",
@@ -328,6 +329,27 @@ const CONTACTS_TOOL: Tool = {
           type: "string",
           enum: ["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"],
           description: "Apple Mail flag color to set. Use 'none' to clear the flag. Required for setMessageFlag."
+        },
+        exportDirectory: {
+          type: "string",
+          description: "Base filesystem directory for exportMessageArtifacts. A per-message subdirectory is created. Defaults to /tmp/apple-mcp-mail-exports."
+        },
+        includeMessageSource: {
+          type: "boolean",
+          description: "Export the full message source as an .eml file for exportMessageArtifacts. Defaults to true."
+        },
+        attachmentMode: {
+          type: "string",
+          enum: ["documentsOnly", "all"],
+          description: "Attachment export filter for exportMessageArtifacts. Defaults to all, so screenshots/images are preserved for later review. documentsOnly is an explicit lossy filter."
+        },
+        skipInlineImages: {
+          type: "boolean",
+          description: "Skip likely inline/signature images during exportMessageArtifacts. Defaults to false; use only when a lossy export is explicitly intended."
+        },
+        dryRun: {
+          type: "boolean",
+          description: "For exportMessageArtifacts, report what would be exported without writing files."
         },
         includeHeaders: {
           type: "boolean",

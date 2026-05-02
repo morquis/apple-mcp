@@ -163,6 +163,28 @@ interface MessageFlagUpdateResult {
   current: MessageFlagState;
 }
 
+type AttachmentExportMode = "documentsOnly" | "all";
+
+interface ExportedMessageArtifact {
+  type: "message" | "attachment";
+  name: string;
+  path?: string;
+  mimeType?: string;
+  fileSize?: number;
+  downloaded?: boolean;
+  skipped: boolean;
+  reason?: string;
+}
+
+interface MessageArtifactExportResult {
+  exportDirectory: string;
+  dryRun: boolean;
+  messageReference: MessageReference;
+  messageFile?: ExportedMessageArtifact;
+  attachments: ExportedMessageArtifact[];
+  skippedAttachments: ExportedMessageArtifact[];
+}
+
 const MESSAGE_FLAG_INDEX_BY_COLOR: Record<MessageFlagColor, number> = {
   none: -1,
   red: 0,
@@ -182,6 +204,18 @@ function normalizeMessageFlagColor(flagColor: string): MessageFlagColor {
   }
 
   throw new Error(`Unsupported Mail flag color '${flagColor}'`);
+}
+
+function normalizeAttachmentExportMode(mode: string | undefined): AttachmentExportMode {
+  if (mode === undefined || mode === "all") {
+    return "all";
+  }
+
+  if (mode === "documentsOnly") {
+    return "documentsOnly";
+  }
+
+  throw new Error(`Unsupported attachment export mode '${mode}'`);
 }
 
 interface MessageMetadataPageInfo {
@@ -285,6 +319,127 @@ function flagColorFromIndex(flagIndex) {
   if (index === 6) return "gray";
 
   return "none";
+}
+
+function sanitizeFileName(value, fallback = "untitled") {
+  const sanitized = toText(value, fallback)
+    .replace(/[\\\\/:*?"<>|]/g, "-")
+    .replace(/[\\r\\n\\t]+/g, " ")
+    .replace(/\\s+/g, " ")
+    .trim();
+
+  if (sanitized.length === 0) {
+    return fallback;
+  }
+
+  return sanitized.length > 140 ? sanitized.slice(0, 140).trim() : sanitized;
+}
+
+function pathJoin(directory, name) {
+  return String(directory).replace(/\\/+$/, "") + "/" + String(name).replace(/^\\/+/, "");
+}
+
+function ensureDirectory(directory) {
+  const fileManager = $.NSFileManager.defaultManager;
+  const exists = Boolean(fileManager.fileExistsAtPath(directory));
+
+  if (exists) {
+    return true;
+  }
+
+  return Boolean(
+    fileManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(
+      directory,
+      true,
+      undefined,
+      null,
+    ),
+  );
+}
+
+function uniquePath(directory, fileName) {
+  const fileManager = $.NSFileManager.defaultManager;
+  const safeName = sanitizeFileName(fileName, "artifact");
+  const dotIndex = safeName.lastIndexOf(".");
+  const baseName = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const extension = dotIndex > 0 ? safeName.slice(dotIndex) : "";
+  let candidate = pathJoin(directory, safeName);
+  let counter = 2;
+
+  while (Boolean(fileManager.fileExistsAtPath(candidate))) {
+    candidate = pathJoin(directory, baseName + " " + counter + extension);
+    counter += 1;
+  }
+
+  return candidate;
+}
+
+function writeUtf8File(path, text) {
+  const nsString = $.NSString.alloc.initWithUTF8String(String(text));
+  return Boolean(nsString.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null));
+}
+
+function extensionFromName(name) {
+  const normalized = toText(name, "").toLowerCase();
+  const dotIndex = normalized.lastIndexOf(".");
+
+  if (dotIndex < 0 || dotIndex === normalized.length - 1) {
+    return "";
+  }
+
+  return normalized.slice(dotIndex + 1);
+}
+
+function classifyAttachmentForExport(name, mimeType, fileSize, attachmentMode, skipInlineImages) {
+  const extension = extensionFromName(name);
+  const mime = toText(mimeType, "").toLowerCase();
+  const size = toNumber(fileSize, 0);
+  const lowerName = toText(name, "").toLowerCase();
+  const documentExtensions = [
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "xlsm",
+    "csv",
+    "txt",
+    "rtf",
+    "rtfd",
+    "xml",
+    "zip",
+    "7z",
+    "eml",
+    "msg",
+    "ics",
+    "pages",
+    "numbers",
+    "key",
+    "odt",
+    "ods",
+  ];
+  const imageExtensions = ["jpg", "jpeg", "png", "gif", "heic", "webp", "tiff", "tif"];
+  const isImage = mime.indexOf("image/") === 0 || imageExtensions.indexOf(extension) >= 0;
+  const hasDocumentHint =
+    /(invoice|receipt|contract)/i
+      .test(lowerName);
+  const looksLikeInlineImage =
+    /^(image|logo|signature|signatur|cid|facebook|linkedin|instagram|twitter|xing|banner|icon)[-_ ]?\\d*/i
+      .test(lowerName) || size <= 300000;
+
+  if (skipInlineImages && isImage && looksLikeInlineImage && !hasDocumentHint) {
+    return { shouldExport: false, reason: "inline-image" };
+  }
+
+  if (
+    attachmentMode === "documentsOnly" &&
+    documentExtensions.indexOf(extension) < 0 &&
+    !(isImage && hasDocumentHint)
+  ) {
+    return { shouldExport: false, reason: "non-document-attachment" };
+  }
+
+  return { shouldExport: true, reason: null };
 }
 
 function getNestedMailboxes(mailboxes) {
@@ -1870,6 +2025,201 @@ async function setMessageFlag(
   }
 }
 
+async function exportMessageArtifacts(
+  accountName: string,
+  mailboxName: string,
+  mailObjectId: string,
+  opts?: {
+    exportDirectory?: string;
+    includeMessageSource?: boolean;
+    includeAttachments?: boolean;
+    attachmentMode?: AttachmentExportMode;
+    skipInlineImages?: boolean;
+    dryRun?: boolean;
+  },
+): Promise<MessageArtifactExportResult> {
+  try {
+    if (!(await checkMailAccess())) {
+      throw new Error("Mail access is not available");
+    }
+
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const escapedMailObjectId = escapeJXAString(mailObjectId);
+    const escapedExportDirectory = escapeJXAString(opts?.exportDirectory ?? "/tmp/apple-mcp-mail-exports");
+    const includeMessageSource = opts?.includeMessageSource !== false;
+    const includeAttachments = opts?.includeAttachments !== false;
+    const attachmentMode = normalizeAttachmentExportMode(opts?.attachmentMode);
+    const skipInlineImages = opts?.skipInlineImages === true;
+    const dryRun = opts?.dryRun === true;
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const mailObjectId = "${escapedMailObjectId}";
+      const baseExportDirectory = "${escapedExportDirectory}";
+      const includeMessageSource = ${includeMessageSource};
+      const includeAttachments = ${includeAttachments};
+      const attachmentMode = "${attachmentMode}";
+      const skipInlineImages = ${skipInlineImages};
+      const dryRun = ${dryRun};
+
+      function findMessageByObjectId(mailbox, objectId) {
+        const messages = safeCall(() => mailbox.messages(), []);
+
+        if (!Array.isArray(messages)) {
+          return null;
+        }
+
+        for (const message of messages) {
+          const currentId = toText(safeCall(() => message.id(), null), "");
+          if (currentId === objectId) {
+            return message;
+          }
+        }
+
+        return null;
+      }
+
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const account = accountMatches[0];
+      let targetMailbox = null;
+      const directMatch = mailboxName.indexOf("/") < 0
+        ? safeCall(() => account.mailboxes.whose({ name: mailboxName })(), [])
+        : [];
+      if (Array.isArray(directMatch) && directMatch.length > 0) {
+        targetMailbox = directMatch[0];
+      } else {
+        targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
+      }
+
+      if (!targetMailbox) {
+        throw new Error("Mailbox not found");
+      }
+
+      const message = findMessageByObjectId(targetMailbox, mailObjectId);
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      const subject = toText(safeCall(() => message.subject(), null), "No subject");
+      const sender = toText(safeCall(() => message.sender(), null), "Unknown sender");
+      const dateSent = toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()");
+      const resolvedMailboxName = mailboxPathFromContainer(targetMailbox, mailboxName, accountName);
+      const messageReference = buildMessageReference(message, account, resolvedMailboxName, subject, sender, dateSent);
+      const exportDirectory = pathJoin(
+        baseExportDirectory,
+        new Date().toISOString().replace(/[:.]/g, "-") + "-" + mailObjectId + "-" + sanitizeFileName(subject, "message"),
+      );
+
+      if (!dryRun && !ensureDirectory(exportDirectory)) {
+        throw new Error("Could not create export directory");
+      }
+
+      let messageFile = null;
+      if (includeMessageSource) {
+        const messageFileName = sanitizeFileName(subject, "message") + ".eml";
+        const messagePath = uniquePath(exportDirectory, messageFileName);
+        messageFile = {
+          type: "message",
+          name: messageFileName,
+          path: messagePath,
+          skipped: false,
+        };
+
+        if (!dryRun) {
+          const source = safeCall(() => message.source(), "");
+          if (!writeUtf8File(messagePath, source)) {
+            messageFile.skipped = true;
+            messageFile.reason = "write-failed";
+            delete messageFile.path;
+          }
+        }
+      }
+
+      const exportedAttachments = [];
+      const skippedAttachments = [];
+
+      if (includeAttachments) {
+        const attachments = safeCall(() => message.mailAttachments(), []);
+
+        for (const attachment of Array.isArray(attachments) ? attachments : []) {
+          const name = toText(safeCall(() => attachment.name(), null), "attachment");
+          const mimeType = toText(
+            safeCall(() => (typeof attachment.mimeType === "function" ? attachment.mimeType() : null), null),
+            "",
+          );
+          const fileSize = toNumber(
+            safeCall(() => (typeof attachment.fileSize === "function" ? attachment.fileSize() : 0), 0),
+            0,
+          );
+          const downloaded = toBoolean(
+            safeCall(() => (typeof attachment.downloaded === "function" ? attachment.downloaded() : false), false),
+            false,
+          );
+          const classification = classifyAttachmentForExport(name, mimeType, fileSize, attachmentMode, skipInlineImages);
+          const baseArtifact = {
+            type: "attachment",
+            name,
+            mimeType,
+            fileSize,
+            downloaded,
+            skipped: false,
+          };
+
+          if (!classification.shouldExport) {
+            skippedAttachments.push({
+              ...baseArtifact,
+              skipped: true,
+              reason: classification.reason || "filtered",
+            });
+            continue;
+          }
+
+          const attachmentPath = uniquePath(exportDirectory, name);
+          const exported = {
+            ...baseArtifact,
+            path: attachmentPath,
+          };
+
+          if (!dryRun) {
+            try {
+              Mail.save(attachment, { in: Path(attachmentPath) });
+            } catch (error) {
+              skippedAttachments.push({
+                ...baseArtifact,
+                skipped: true,
+                reason: "save-failed: " + String(error),
+              });
+              continue;
+            }
+          }
+
+          exportedAttachments.push(exported);
+        }
+      }
+
+      return JSON.stringify({
+        exportDirectory,
+        dryRun,
+        messageReference,
+        messageFile,
+        attachments: exportedAttachments,
+        skippedAttachments,
+      });
+    `);
+
+    return await executeJXA<MessageArtifactExportResult>(script);
+  } catch (error) {
+    throw toMailError("Error exporting message artifacts", error);
+  }
+}
+
 async function createMailbox(
   accountName: string,
   parentMailbox: string | null,
@@ -2061,6 +2411,7 @@ const mail = {
   listMessageMetadata,
   searchMessageMetadata,
   setMessageFlag,
+  exportMessageArtifacts,
   createMailbox,
   deleteMailbox,
   renameMailbox,
@@ -2080,6 +2431,7 @@ export {
   getMailboxes,
   getMailboxesForAccount,
   getUnreadMails,
+  exportMessageArtifacts,
   listMessageMetadata,
   listMessages,
   moveMailbox,

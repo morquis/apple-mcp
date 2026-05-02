@@ -1146,6 +1146,42 @@ function initServer() {
                 };
               }
 
+              case "exportMessageArtifacts": {
+                if (!args.account || !args.mailbox || !args.mailObjectId) {
+                  throw new Error("Account, mailbox, and mailObjectId are required for exportMessageArtifacts operation");
+                }
+
+                const result = await mailModule.exportMessageArtifacts(
+                  args.account,
+                  args.mailbox,
+                  args.mailObjectId,
+                  {
+                    exportDirectory: args.exportDirectory,
+                    includeMessageSource: args.includeMessageSource,
+                    includeAttachments: args.includeAttachments,
+                    attachmentMode: args.attachmentMode,
+                    skipInlineImages: args.skipInlineImages,
+                    dryRun: args.dryRun,
+                  },
+                );
+                const messageStatus = result.messageFile
+                  ? `message=${result.messageFile.skipped ? "skipped" : result.messageFile.path}`
+                  : "message=not requested";
+                const text =
+                  `Export directory: ${result.exportDirectory}\n` +
+                  `Dry run: ${result.dryRun ? "yes" : "no"}\n` +
+                  `Subject: ${result.messageReference.subject}\n` +
+                  `${messageStatus}\n` +
+                  `Attachments exported: ${result.attachments.length}\n` +
+                  `Attachments skipped: ${result.skippedAttachments.length}`;
+
+                return {
+                  content: [{ type: "text", text }],
+                  exportResult: result,
+                  isError: false
+                };
+              }
+
               case "createMailbox": {
                 const result = await mailModule.createMailbox(
                   args.account!,
@@ -1873,6 +1909,7 @@ function isMailArgs(args: unknown): args is {
     | "search"
     | "searchMetadata"
     | "setMessageFlag"
+    | "exportMessageArtifacts"
     | "send"
     | "mailboxes"
     | "accounts"
@@ -1900,6 +1937,11 @@ function isMailArgs(args: unknown): args is {
   searchFields?: Array<"subject" | "sender" | "attachmentNames">;
   mailObjectId?: string;
   flagColor?: "none" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "gray";
+  exportDirectory?: string;
+  includeMessageSource?: boolean;
+  attachmentMode?: "documentsOnly" | "all";
+  skipInlineImages?: boolean;
+  dryRun?: boolean;
   to?: string;
   subject?: string;
   body?: string;
@@ -1933,6 +1975,11 @@ function isMailArgs(args: unknown): args is {
     searchFields,
     mailObjectId,
     flagColor,
+    exportDirectory,
+    includeMessageSource,
+    attachmentMode,
+    skipInlineImages,
+    dryRun,
     to,
     subject,
     body,
@@ -1952,6 +1999,7 @@ function isMailArgs(args: unknown): args is {
     "search",
     "searchMetadata",
     "setMessageFlag",
+    "exportMessageArtifacts",
     "send",
     "mailboxes",
     "accounts",
@@ -2009,6 +2057,17 @@ function isMailArgs(args: unknown): args is {
         typeof flagColor !== "string" ||
         !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor)
       ) return false;
+      break;
+    case "exportMessageArtifacts":
+      if (!account || typeof account !== "string") return false;
+      if (!mailbox || typeof mailbox !== "string") return false;
+      if (!mailObjectId || typeof mailObjectId !== "string") return false;
+      if (exportDirectory !== undefined && typeof exportDirectory !== "string") return false;
+      if (includeMessageSource !== undefined && typeof includeMessageSource !== "boolean") return false;
+      if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
+      if (attachmentMode !== undefined && !["documentsOnly", "all"].includes(attachmentMode)) return false;
+      if (skipInlineImages !== undefined && typeof skipInlineImages !== "boolean") return false;
+      if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
       break;
     case "send":
       if (!to || typeof to !== "string" ||
@@ -2083,6 +2142,11 @@ function isMailArgs(args: unknown): args is {
   if (searchFields !== undefined && (!Array.isArray(searchFields) || !searchFields.every(field => ["subject", "sender", "attachmentNames"].includes(field)))) return false;
   if (mailObjectId !== undefined && typeof mailObjectId !== "string") return false;
   if (flagColor !== undefined && (typeof flagColor !== "string" || !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor))) return false;
+  if (exportDirectory !== undefined && typeof exportDirectory !== "string") return false;
+  if (includeMessageSource !== undefined && typeof includeMessageSource !== "boolean") return false;
+  if (attachmentMode !== undefined && (typeof attachmentMode !== "string" || !["documentsOnly", "all"].includes(attachmentMode))) return false;
+  if (skipInlineImages !== undefined && typeof skipInlineImages !== "boolean") return false;
+  if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
   if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;

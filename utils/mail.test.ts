@@ -460,4 +460,85 @@ describe("mail", () => {
       mailModule.setMessageFlag("Work", "Archive/Invoices", "100001", "pink" as any),
     ).rejects.toThrow("Unsupported Mail flag color 'pink'");
   });
+
+  it("exportMessageArtifacts exports message source and all downloaded attachments in a scoped mailbox", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce({
+        exportDirectory: "/tmp/mail-export/2026-05-02-100001-Invoice",
+        dryRun: false,
+        messageReference: {
+          mailObjectId: "100001",
+          messageId: "invoice-1@example.com",
+          accountId: "account-1",
+          accountName: "Work",
+          mailboxPath: "Archive/Facility",
+          dateSent: "2026-04-20T10:00:00.000Z",
+          sender: "sender@example.com",
+          subject: "Invoice",
+        },
+        messageFile: {
+          type: "message",
+          name: "Invoice.eml",
+          path: "/tmp/mail-export/2026-05-02-100001-Invoice/Invoice.eml",
+          skipped: false,
+        },
+        attachments: [
+          {
+            type: "attachment",
+            name: "invoice.pdf",
+            path: "/tmp/mail-export/2026-05-02-100001-Invoice/invoice.pdf",
+            mimeType: "application/pdf",
+            fileSize: 1024,
+            downloaded: true,
+            skipped: false,
+          },
+          {
+            type: "attachment",
+            name: "image001.png",
+            path: "/tmp/mail-export/2026-05-02-100001-Invoice/image001.png",
+            mimeType: "image/png",
+            fileSize: 20000,
+            downloaded: true,
+            skipped: false,
+          },
+        ],
+        skippedAttachments: [],
+      } as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.exportMessageArtifacts("Work", "Archive/Facility", "100001", {
+      exportDirectory: "/tmp/mail-export",
+    });
+
+    expect(result.attachments).toHaveLength(2);
+    expect(result.skippedAttachments).toHaveLength(0);
+
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const accountName = "Work"');
+    expect(script).toContain('const mailboxName = "Archive/Facility"');
+    expect(script).toContain('const mailObjectId = "100001"');
+    expect(script).toContain('const baseExportDirectory = "/tmp/mail-export"');
+    expect(script).toContain('const attachmentMode = "all"');
+    expect(script).toContain("const skipInlineImages = false");
+    expect(script).toContain("message.source()");
+    expect(script).toContain("Mail.save(attachment, { in: Path(attachmentPath) })");
+    expect(script).toContain("classifyAttachmentForExport");
+    expect(script).not.toContain("Mail.messages()");
+  });
+
+  it("exportMessageArtifacts rejects unsupported attachment modes", async () => {
+    const mailModule = await importMail();
+
+    await expect(
+      mailModule.exportMessageArtifacts("Work", "Archive/Invoices", "100001", {
+        attachmentMode: "imagesOnly" as any,
+      }),
+    ).rejects.toThrow("Unsupported attachment export mode 'imagesOnly'");
+  });
 });
