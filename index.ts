@@ -986,6 +986,46 @@ function initServer() {
                 };
               }
 
+              case "messageMetadata": {
+                if (!args.account || !args.mailbox) {
+                  throw new Error("Account and mailbox are required for messageMetadata operation");
+                }
+                const opts = {
+                  limit: args.limit,
+                  unreadOnly: args.unreadOnly,
+                  startDate: args.startDate,
+                  endDate: args.endDate,
+                  includeAttachmentNames: args.includeAttachmentNames,
+                  includeHeaders: args.includeHeaders,
+                  headerFilter: args.headerFilter,
+                };
+                const messages = await mailModule.listMessageMetadata(args.account, args.mailbox, opts);
+
+                const textContent = messages.length > 0
+                  ? messages.map((m, index) => {
+                    let msgText = `=== Message ${index + 1} ===\n`;
+                    msgText += `From: ${m.sender}\n`;
+                    msgText += `Date: ${m.dateSent}\n`;
+                    msgText += `Subject: ${m.subject}\n`;
+                    msgText += `Read: ${m.isRead ? "Yes" : "No"}\n`;
+                    msgText += `Mailbox: ${m.mailbox}\n`;
+                    if (m.messageLink) {
+                      msgText += `Link: ${m.messageLink}\n`;
+                    }
+                    if (args.includeAttachmentNames && m.attachmentNames) {
+                      msgText += `Attachments (${m.attachmentCount ?? m.attachmentNames.length}): ${m.attachmentNames.join(", ") || "none"}\n`;
+                    }
+                    return msgText;
+                  }).join("\n")
+                  : "No messages found";
+
+                return {
+                  content: [{ type: "text", text: textContent }],
+                  messages,
+                  isError: false
+                };
+              }
+
               case "createMailbox": {
                 const result = await mailModule.createMailbox(
                   args.account!,
@@ -1719,6 +1759,7 @@ function isMailArgs(args: unknown): args is {
     | "mailboxTree"
     | "mailboxProps"
     | "messages"
+    | "messageMetadata"
     | "createMailbox"
     | "deleteMailbox"
     | "renameMailbox"
@@ -1740,6 +1781,7 @@ function isMailArgs(args: unknown): args is {
   cc?: string;
   bcc?: string;
   includeAttachments?: boolean;
+  includeAttachmentNames?: boolean;
   includeHeaders?: boolean;
   headerFilter?: string[];
 } {
@@ -1764,6 +1806,7 @@ function isMailArgs(args: unknown): args is {
     cc,
     bcc,
     includeAttachments,
+    includeAttachmentNames,
     includeHeaders,
     headerFilter,
   } = args as any;
@@ -1780,6 +1823,7 @@ function isMailArgs(args: unknown): args is {
     "mailboxTree",
     "mailboxProps",
     "messages",
+    "messageMetadata",
     "createMailbox",
     "deleteMailbox",
     "renameMailbox",
@@ -1812,6 +1856,13 @@ function isMailArgs(args: unknown): args is {
       if (startDate && typeof startDate !== "string") return false;
       if (endDate && typeof endDate !== "string") return false;
       if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
+      break;
+    case "messageMetadata":
+      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (startDate && typeof startDate !== "string") return false;
+      if (endDate && typeof endDate !== "string") return false;
+      if (unreadOnly !== undefined && typeof unreadOnly !== "boolean") return false;
+      if (includeAttachmentNames !== undefined && typeof includeAttachmentNames !== "boolean") return false;
       break;
     case "createMailbox":
       if (!account || typeof account !== "string" || !name || typeof name !== "string") return false;

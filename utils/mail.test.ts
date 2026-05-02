@@ -231,4 +231,50 @@ describe("mail", () => {
     expect(script).toContain("currentMailbox.container()");
     expect(script).toContain('const accountName = "Work"');
   });
+
+  it("listMessageMetadata uses mailbox paths and omits message content", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce([
+        {
+          subject: "Invoice",
+          sender: "billing@example.com",
+          dateSent: "2026-04-20T10:00:00.000Z",
+          isRead: true,
+          mailbox: "Archive/Invoices",
+          attachmentCount: 1,
+          attachmentNames: ["invoice.pdf"],
+        },
+      ] as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.listMessageMetadata("Work", "Archive/Invoices", {
+      limit: 10,
+      includeAttachmentNames: true,
+    });
+
+    expect(result).toEqual([
+      {
+        subject: "Invoice",
+        sender: "billing@example.com",
+        dateSent: "2026-04-20T10:00:00.000Z",
+        isRead: true,
+        mailbox: "Archive/Invoices",
+        attachmentCount: 1,
+        attachmentNames: ["invoice.pdf"],
+      },
+    ]);
+
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const mailboxName = "Archive/Invoices"');
+    expect(script).toContain("const limit = 10");
+    expect(script).toContain("const includeAttachmentNames = true");
+    expect(script).toContain("buildMessageMetadata(message, resolvedMailboxName, includeAttachmentNames)");
+    expect(script).not.toContain("buildMessage(message, resolvedMailboxName");
+  });
 });

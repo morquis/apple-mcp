@@ -97,6 +97,18 @@ interface EmailMessage {
   messageLink?: string;
 }
 
+interface EmailMessageMetadata {
+  subject: string;
+  sender: string;
+  dateSent: string;
+  isRead: boolean;
+  mailbox: string;
+  headers?: string;
+  messageLink?: string;
+  attachmentCount?: number;
+  attachmentNames?: string[];
+}
+
 interface MailAccount {
   name: string;
   id: string;
@@ -188,13 +200,20 @@ function getNestedMailboxes(mailboxes) {
   return result;
 }
 
-function findMailboxRecursive(mailboxes, targetName) {
+function findMailboxRecursive(mailboxes, targetName, accountName = "") {
   const allMailboxes = getNestedMailboxes(mailboxes);
 
   for (const mailbox of allMailboxes) {
     const mailboxName = toText(safeCall(() => mailbox.name(), null), null);
     if (mailboxName === targetName) {
       return mailbox;
+    }
+
+    if (targetName.indexOf("/") >= 0) {
+      const mailboxPath = mailboxPathFromContainer(mailbox, mailboxName || targetName, accountName);
+      if (mailboxPath === targetName) {
+        return mailbox;
+      }
     }
   }
 
@@ -276,6 +295,29 @@ function buildMessage(message, mailboxName, includeAttachments, includeHeaders) 
 
   if (includeHeaders) {
     result.headers = getHeaders(message);
+  }
+
+  return result;
+}
+
+function buildMessageMetadata(message, mailboxName, includeAttachmentNames) {
+  const result = {
+    subject: toText(safeCall(() => message.subject(), null), "No subject"),
+    sender: toText(safeCall(() => message.sender(), null), "Unknown sender"),
+    dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
+    isRead: toBoolean(safeCall(() => message.readStatus(), false), false),
+    mailbox: mailboxName,
+  };
+
+  if (includeAttachmentNames) {
+    const attachments = safeCall(() => message.mailAttachments(), []);
+    const names = Array.isArray(attachments)
+      ? attachments
+          .map((attachment) => toText(safeCall(() => attachment.name(), null), ""))
+          .filter((name) => name.length > 0)
+      : [];
+    result.attachmentCount = Array.isArray(attachments) ? attachments.length : 0;
+    result.attachmentNames = names;
   }
 
   return result;
@@ -422,6 +464,14 @@ function buildMailScript(functionBody: string): string {
 
 function normalizeLimit(limit: number): number {
   return Math.max(0, Math.trunc(limit));
+}
+
+function normalizeMetadataLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return 25;
+  }
+
+  return Math.min(200, Math.max(0, Math.trunc(limit)));
 }
 
 function processHeaders(messages: EmailMessage[], headerFilter?: string[]): EmailMessage[] {
@@ -936,7 +986,7 @@ async function getMailboxProperties(
         return JSON.stringify(null);
       }
 
-      const mailbox = findMailboxRecursive(safeCall(() => matches[0].mailboxes(), []), mailboxName);
+      const mailbox = findMailboxRecursive(safeCall(() => matches[0].mailboxes(), []), mailboxName, accountName);
       if (!mailbox) {
         return JSON.stringify(null);
       }
@@ -1044,6 +1094,7 @@ async function listMessages(
         targetMailbox = findMailboxRecursive(
           safeCall(() => accountMatches[0].mailboxes(), []),
           mailboxName,
+          accountName,
         );
       }
       if (!targetMailbox) {
@@ -1105,6 +1156,129 @@ async function listMessages(
   }
 }
 
+async function listMessageMetadata(
+  accountName: string,
+  mailboxName: string,
+  opts?: {
+    limit?: number;
+    unreadOnly?: boolean;
+    startDate?: string;
+    endDate?: string;
+    includeAttachmentNames?: boolean;
+    includeHeaders?: boolean;
+    headerFilter?: string[];
+  },
+): Promise<EmailMessageMetadata[]> {
+  try {
+    if (!(await checkMailAccess())) {
+      return [];
+    }
+
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const limitLiteral = String(normalizeMetadataLimit(opts?.limit));
+    const startDateLiteral =
+      opts?.startDate === undefined ? "null" : `"${escapeJXAString(opts.startDate)}"`;
+    const endDateLiteral =
+      opts?.endDate === undefined ? "null" : `"${escapeJXAString(opts.endDate)}"`;
+    const unreadOnly = opts?.unreadOnly === true;
+    const includeAttachmentNames = opts?.includeAttachmentNames === true;
+    const includeHeaders = opts?.includeHeaders === true;
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const limit = ${limitLiteral};
+      const unreadOnly = ${unreadOnly};
+      const includeAttachmentNames = ${includeAttachmentNames};
+      const includeHeaders = ${includeHeaders};
+      const startDate = ${startDateLiteral};
+      const endDate = ${endDateLiteral};
+
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        return JSON.stringify([]);
+      }
+
+      let targetMailbox = null;
+      const directMatch = mailboxName.indexOf("/") < 0
+        ? safeCall(() => accountMatches[0].mailboxes.whose({ name: mailboxName })(), [])
+        : [];
+      if (Array.isArray(directMatch) && directMatch.length > 0) {
+        targetMailbox = directMatch[0];
+      } else {
+        targetMailbox = findMailboxRecursive(
+          safeCall(() => accountMatches[0].mailboxes(), []),
+          mailboxName,
+          accountName,
+        );
+      }
+      if (!targetMailbox) {
+        return JSON.stringify([]);
+      }
+
+      let messages;
+      if (unreadOnly) {
+        messages = safeCall(() => targetMailbox.messages.whose({ readStatus: false })(), []);
+      } else {
+        messages = safeCall(() => targetMailbox.messages(), []);
+      }
+      if (!Array.isArray(messages)) {
+        messages = [];
+      }
+
+      if (startDate !== null || endDate !== null) {
+        const startDateValue = startDate === null ? null : new Date(startDate);
+        const endDateValue = endDate === null ? null : new Date(endDate);
+
+        messages = messages.filter((message) => {
+          const dateValue = safeCall(() => message.dateSent(), null);
+          const messageDate = dateValue === null ? null : new Date(dateValue);
+
+          if (messageDate === null || Number.isNaN(messageDate.getTime())) {
+            return false;
+          }
+
+          if (startDateValue !== null && !Number.isNaN(startDateValue.getTime()) && messageDate < startDateValue) {
+            return false;
+          }
+
+          if (endDateValue !== null && !Number.isNaN(endDateValue.getTime()) && messageDate > endDateValue) {
+            return false;
+          }
+
+          return true;
+        });
+      }
+
+      messages = messages.slice(0, limit);
+
+      const resolvedMailboxName = mailboxPathFromContainer(targetMailbox, mailboxName, accountName);
+      const result = messages.map((message) =>
+        buildMessageMetadata(message, resolvedMailboxName, includeAttachmentNames),
+      );
+
+      if (includeHeaders) {
+        for (let i = 0; i < result.length; i += 1) {
+          result[i].headers = getHeaders(messages[i]);
+        }
+      }
+
+      return JSON.stringify(result);
+    `);
+
+    const messages = await executeJXA<EmailMessageMetadata[]>(script);
+    const resolvedMessages = Array.isArray(messages) ? messages : [];
+
+    return includeHeaders
+      ? processHeaders(resolvedMessages as EmailMessage[], opts?.headerFilter) as EmailMessageMetadata[]
+      : resolvedMessages;
+  } catch (error) {
+    throw toMailError("Error listing message metadata", error);
+  }
+}
+
 async function createMailbox(
   accountName: string,
   parentMailbox: string | null,
@@ -1134,7 +1308,7 @@ async function createMailbox(
       let targetContainer = accountMatches[0];
 
       if (parentMailbox !== null) {
-        const parent = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), parentMailbox);
+        const parent = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), parentMailbox, accountName);
         if (!parent) {
           throw new Error("Parent mailbox not found");
         }
@@ -1175,7 +1349,7 @@ async function deleteMailbox(accountName: string, mailboxName: string): Promise<
         throw new Error("Account not found");
       }
 
-      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName);
+      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName, accountName);
       if (!mailbox) {
         throw new Error("Mailbox not found");
       }
@@ -1215,7 +1389,7 @@ async function renameMailbox(
         throw new Error("Account not found");
       }
 
-      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName);
+      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName, accountName);
       if (!mailbox) {
         throw new Error("Mailbox not found");
       }
@@ -1256,7 +1430,7 @@ async function moveMailbox(
       }
 
       const account = accountMatches[0];
-      const mailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName);
+      const mailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
       if (!mailbox) {
         throw new Error("Mailbox not found");
       }
@@ -1264,7 +1438,7 @@ async function moveMailbox(
       const destination =
         targetParent.length === 0
           ? account
-          : findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetParent);
+          : findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetParent, accountName);
 
       if (!destination) {
         throw new Error("Target mailbox not found");
@@ -1293,6 +1467,7 @@ const mail = {
   getMailboxProperties,
   getAccountMailboxTree,
   listMessages,
+  listMessageMetadata,
   createMailbox,
   deleteMailbox,
   renameMailbox,
@@ -1312,6 +1487,7 @@ export {
   getMailboxes,
   getMailboxesForAccount,
   getUnreadMails,
+  listMessageMetadata,
   listMessages,
   moveMailbox,
   renameMailbox,

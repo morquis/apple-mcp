@@ -203,13 +203,13 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread' and 'messages', always specify 'account' (and ideally 'mailbox') to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
+    description: "Interact with Apple Mail app - read unread emails, search emails, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', and 'messageMetadata', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'latest', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', or 'messages'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
           enum: [
             "unread",
             "latest",
@@ -221,7 +221,8 @@ const CONTACTS_TOOL: Tool = {
             "accountDetails",
             "mailboxTree",
             "mailboxProps",
-            "messages"
+            "messages",
+            "messageMetadata"
           ]
         },
         account: {
@@ -275,6 +276,10 @@ const CONTACTS_TOOL: Tool = {
         includeAttachments: {
           type: "boolean",
           description: "Include attachment information in the response (optional for messages operation)"
+        },
+        includeAttachmentNames: {
+          type: "boolean",
+          description: "Include attachment count and attachment names without message body content (optional for messageMetadata operation)"
         },
         includeHeaders: {
           type: "boolean",
