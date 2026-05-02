@@ -1,13 +1,9 @@
-import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import tools from "../tools.js";
-
-const execFileAsync = promisify(execFile);
 
 const MAIL_DISPATCH_OPERATIONS = [
   "unread",
@@ -120,6 +116,14 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
+async function readTextFile(filePath: string): Promise<string | null> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 async function getArtifactMtime(rootDir: string, artifact: string | null): Promise<string | null> {
   if (!artifact) {
     return null;
@@ -189,6 +193,44 @@ function getToolOperations(): RuntimeToolInfo[] {
   });
 }
 
+async function readGitCommitFromFiles(rootDir: string): Promise<string | null> {
+  const gitDir = path.join(rootDir, ".git");
+  const head = (await readTextFile(path.join(gitDir, "HEAD")))?.trim();
+
+  if (!head) {
+    return null;
+  }
+
+  if (!head.startsWith("ref: ")) {
+    return head;
+  }
+
+  const ref = head.slice("ref: ".length).trim();
+  const looseRef = (await readTextFile(path.join(gitDir, ref)))?.trim();
+
+  if (looseRef) {
+    return looseRef;
+  }
+
+  const packedRefs = await readTextFile(path.join(gitDir, "packed-refs"));
+  if (!packedRefs) {
+    return null;
+  }
+
+  for (const line of packedRefs.split("\n")) {
+    if (line.startsWith("#") || line.startsWith("^")) {
+      continue;
+    }
+
+    const [commit, packedRef] = line.trim().split(" ");
+    if (packedRef === ref && commit) {
+      return commit;
+    }
+  }
+
+  return null;
+}
+
 async function getGitInfo(rootDir: string): Promise<RuntimeInfo["git"]> {
   const envCommit =
     process.env.APPLE_MCP_GIT_COMMIT ??
@@ -205,41 +247,14 @@ async function getGitInfo(rootDir: string): Promise<RuntimeInfo["git"]> {
     };
   }
 
-  try {
-    const [{ stdout: commitStdout }, { stdout: statusStdout }] = await Promise.all([
-      execFileAsync("git", ["rev-parse", "HEAD"], { cwd: rootDir, timeout: 750 }),
-      execFileAsync("git", ["status", "--short"], { cwd: rootDir, timeout: 750 }),
-    ]);
-    const commit = commitStdout.trim();
+  const commit = await readGitCommitFromFiles(rootDir);
 
-    return {
-      commit: commit.length > 0 ? commit : null,
-      shortCommit: commit.length > 0 ? commit.slice(0, 12) : null,
-      dirty: statusStdout.trim().length > 0,
-      source: "git-cli",
-    };
-  } catch {
-    return {
-      commit: null,
-      shortCommit: null,
-      dirty: null,
-      source: "unavailable",
-    };
-  }
-}
-
-async function getBunVersion(): Promise<string | null> {
-  if (process.versions.bun) {
-    return process.versions.bun;
-  }
-
-  try {
-    const { stdout } = await execFileAsync("bun", ["--version"], { timeout: 750 });
-    const version = stdout.trim();
-    return version.length > 0 ? version : null;
-  } catch {
-    return null;
-  }
+  return {
+    commit,
+    shortCommit: commit ? commit.slice(0, 12) : null,
+    dirty: null,
+    source: commit ? "git-files" : "unavailable",
+  };
 }
 
 async function getRuntimeInfo(): Promise<RuntimeInfo> {
@@ -280,7 +295,7 @@ async function getRuntimeInfo(): Promise<RuntimeInfo> {
     git: await getGitInfo(rootDir),
     runtime: {
       node: process.version,
-      bun: await getBunVersion(),
+      bun: process.versions.bun ?? null,
       platform: process.platform,
       arch: process.arch,
       pid: process.pid,
