@@ -108,8 +108,13 @@ interface MailAccount {
 interface MailboxInfo {
   name: string;
   id: string;
+  path: string;
+  parentPath: string | null;
   unreadCount: number;
   totalCount: number;
+  directUnreadCount: number;
+  directMessageCount: number;
+  directChildCount: number;
   children: MailboxInfo[];
 }
 
@@ -278,20 +283,65 @@ function buildMessage(message, mailboxName, includeAttachments, includeHeaders) 
 
 function buildMailboxSummary(mailbox) {
   const messages = safeCall(() => mailbox.messages(), []);
+  const children = safeCall(() => mailbox.mailboxes(), []);
+  const name = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
+  const unreadCount = toNumber(
+    safeCall(() => (typeof mailbox.unreadCount === "function" ? mailbox.unreadCount() : 0), 0),
+    0,
+  );
+  const directMessageCount = Array.isArray(messages) ? messages.length : 0;
+  const directChildCount = Array.isArray(children) ? children.length : 0;
+
   return {
-    name: toText(safeCall(() => mailbox.name(), null), "Unknown mailbox"),
+    name,
     id: toText(safeCall(() => mailbox.id(), null), ""),
-    unreadCount: toNumber(
-      safeCall(() => (typeof mailbox.unreadCount === "function" ? mailbox.unreadCount() : 0), 0),
-      0,
-    ),
-    totalCount: Array.isArray(messages) ? messages.length : 0,
+    path: name,
+    parentPath: null,
+    unreadCount,
+    totalCount: directMessageCount,
+    directUnreadCount: unreadCount,
+    directMessageCount,
+    directChildCount,
     children: [],
   };
 }
 
-function buildMailboxInfo(mailbox, recursive) {
+function mailboxPathFromContainer(mailbox, fallbackPath, accountName) {
+  const pathParts = [toText(safeCall(() => mailbox.name(), null), "Unknown mailbox")];
+  let currentMailbox = mailbox;
+
+  for (let i = 0; i < 25; i += 1) {
+    const parentMailbox = safeCall(
+      () => (typeof currentMailbox.container === "function" ? currentMailbox.container() : null),
+      null,
+    );
+    if (!parentMailbox) {
+      break;
+    }
+
+    const parentName = toText(safeCall(() => parentMailbox.name(), null), "");
+    if (!parentName || parentName === accountName) {
+      break;
+    }
+
+    pathParts.unshift(parentName);
+    currentMailbox = parentMailbox;
+  }
+
+  const path = pathParts.filter((part) => part.length > 0).join("/");
+  return path || fallbackPath;
+}
+
+function parentPathFromPath(path) {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : null;
+}
+
+function buildMailboxInfo(mailbox, recursive, fallbackPath = "", accountName = "") {
   const summary = buildMailboxSummary(mailbox);
+  summary.path = mailboxPathFromContainer(mailbox, fallbackPath || summary.name, accountName);
+  summary.parentPath = parentPathFromPath(summary.path);
+
   const children = safeCall(() => mailbox.mailboxes(), []);
 
   if (!Array.isArray(children)) {
@@ -299,10 +349,67 @@ function buildMailboxInfo(mailbox, recursive) {
   }
 
   summary.children = children.map((child) =>
-    recursive ? buildMailboxInfo(child, true) : buildMailboxSummary(child),
+    recursive
+      ? buildMailboxInfo(child, true, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName)
+      : buildMailboxInfo(child, false, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName),
   );
 
   return summary;
+}
+
+function buildMailboxTree(mailboxes, accountName) {
+  const byPath = {};
+
+  function collect(mailbox, fallbackParentPath) {
+    const mailboxName = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
+    const fallbackPath = fallbackParentPath ? fallbackParentPath + "/" + mailboxName : mailboxName;
+    const summary = buildMailboxInfo(mailbox, false, fallbackPath, accountName);
+
+    if (!byPath[summary.path]) {
+      byPath[summary.path] = { ...summary, children: [] };
+    }
+
+    const children = safeCall(() => mailbox.mailboxes(), []);
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        collect(child, summary.path);
+      }
+    }
+  }
+
+  for (const mailbox of Array.isArray(mailboxes) ? mailboxes : []) {
+    collect(mailbox, "");
+  }
+
+  const nodes = Object.values(byPath);
+  nodes.sort((a, b) => {
+    const depthDiff = a.path.split("/").length - b.path.split("/").length;
+    return depthDiff !== 0 ? depthDiff : a.path.localeCompare(b.path);
+  });
+
+  const roots = [];
+  for (const node of nodes) {
+    const parent = node.parentPath ? byPath[node.parentPath] : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  function sortChildren(node) {
+    node.children.sort((a, b) => a.name.localeCompare(b.name));
+    for (const child of node.children) {
+      sortChildren(child);
+    }
+  }
+
+  roots.sort((a, b) => a.name.localeCompare(b.name));
+  for (const root of roots) {
+    sortChildren(root);
+  }
+
+  return roots;
 }
 `;
 
@@ -834,7 +941,7 @@ async function getMailboxProperties(
         return JSON.stringify(null);
       }
 
-      return JSON.stringify(buildMailboxInfo(mailbox, false));
+      return JSON.stringify(buildMailboxInfo(mailbox, false, mailboxName, accountName));
     `);
 
     const info = await executeJXA<MailboxInfo | null>(script);
@@ -861,9 +968,7 @@ async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]
       }
 
       const mailboxes = safeCall(() => matches[0].mailboxes(), []);
-      const result = Array.isArray(mailboxes)
-        ? mailboxes.map((mailbox) => buildMailboxInfo(mailbox, true))
-        : [];
+      const result = buildMailboxTree(mailboxes, accountName);
 
       return JSON.stringify(result);
     `);

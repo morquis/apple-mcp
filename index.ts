@@ -897,7 +897,13 @@ function initServer() {
               case "mailboxTree": {
                 const tree = await mailModule.getAccountMailboxTree(args.account!);
                 const formatTree = (boxes: any[], indent = 0): string =>
-                  boxes.map(b => `${" ".repeat(indent)}- ${b.name} (${b.unreadCount}/${b.totalCount})\n${formatTree(b.children, indent + 2)}`).join("");
+                  boxes.map(b => {
+                    const unread = b.directUnreadCount ?? b.unreadCount;
+                    const total = b.directMessageCount ?? b.totalCount;
+                    const childCount = b.directChildCount ?? (Array.isArray(b.children) ? b.children.length : 0);
+                    const label = b.path && b.path !== b.name ? `${b.name} [${b.path}]` : b.name;
+                    return `${" ".repeat(indent)}- ${label} (${unread}/${total}, children: ${childCount})\n${formatTree(b.children ?? [], indent + 2)}`;
+                  }).join("");
                 return {
                   content: [{ type: "text", text: formatTree(tree).trim() }],
                   mailboxes: tree,

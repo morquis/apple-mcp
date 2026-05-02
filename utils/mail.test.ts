@@ -183,4 +183,52 @@ describe("mail", () => {
     expect(result).toEqual(["Inbox", "Archive"]);
     expect(String(executeJXASpy.mock.calls[2]?.[0])).toContain("Mail.mailboxes()");
   });
+
+  it("getAccountMailboxTree returns structured path metadata", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    const tree = [
+      {
+        name: "Archive",
+        id: "mailbox-1",
+        path: "Archive",
+        parentPath: null,
+        unreadCount: 0,
+        totalCount: 0,
+        directUnreadCount: 0,
+        directMessageCount: 0,
+        directChildCount: 1,
+        children: [
+          {
+            name: "Invoices",
+            id: "mailbox-2",
+            path: "Archive/Invoices",
+            parentPath: "Archive",
+            unreadCount: 0,
+            totalCount: 60,
+            directUnreadCount: 0,
+            directMessageCount: 60,
+            directChildCount: 0,
+            children: [],
+          },
+        ],
+      },
+    ];
+
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(tree as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.getAccountMailboxTree("Work");
+
+    expect(result).toEqual(tree);
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain("buildMailboxTree(mailboxes, accountName)");
+    expect(script).toContain("currentMailbox.container()");
+    expect(script).toContain('const accountName = "Work"');
+  });
 });
