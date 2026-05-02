@@ -994,7 +994,7 @@ function initServer() {
                     type: "text",
                     text: textContent
                   }],
-                  messages,
+                  structuredContent: { messages },
                   isError: false
                 };
               }
@@ -1053,8 +1053,7 @@ function initServer() {
 
                 return {
                   content: [{ type: "text", text: textContent }],
-                  messages,
-                  pageInfo,
+                  structuredContent: { messages, pageInfo },
                   isError: false
                 };
               }
@@ -1115,8 +1114,7 @@ function initServer() {
 
                 return {
                   content: [{ type: "text", text: textContent }],
-                  messages,
-                  pageInfo,
+                  structuredContent: { messages, pageInfo },
                   isError: false
                 };
               }
