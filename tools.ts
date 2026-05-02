@@ -212,13 +212,13 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, export selected message artifacts, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', 'setMessageFlag', and 'exportMessageArtifacts', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
+    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, export selected message artifacts, move selected messages, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', and 'moveMessage', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', 'moveMessage', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
           enum: [
             "unread",
             "latest",
@@ -226,6 +226,7 @@ const CONTACTS_TOOL: Tool = {
             "searchMetadata",
             "setMessageFlag",
             "exportMessageArtifacts",
+            "moveMessage",
             "send",
             "mailboxes",
             "accounts",
@@ -323,7 +324,7 @@ const CONTACTS_TOOL: Tool = {
         },
         mailObjectId: {
           type: "string",
-          description: "Apple Mail object id from messageReference.mailObjectId. Required for setMessageFlag."
+          description: "Apple Mail object id from messageReference.mailObjectId. Required for setMessageFlag, exportMessageArtifacts, and moveMessage."
         },
         flagColor: {
           type: "string",
@@ -349,7 +350,11 @@ const CONTACTS_TOOL: Tool = {
         },
         dryRun: {
           type: "boolean",
-          description: "For exportMessageArtifacts, report what would be exported without writing files."
+          description: "For exportMessageArtifacts or moveMessage, report what would happen without writing files or moving mail."
+        },
+        targetMailbox: {
+          type: "string",
+          description: "Destination mailbox path for moveMessage, e.g. 'Archive/Invoices'."
         },
         includeHeaders: {
           type: "boolean",

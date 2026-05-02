@@ -542,4 +542,48 @@ describe("mail", () => {
       }),
     ).rejects.toThrow("Unsupported attachment export mode 'imagesOnly'");
   });
+
+  it("moveMessage moves one scoped message by object id with dry run support", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce({
+        dryRun: true,
+        moved: false,
+        sourceMailbox: "INBOX",
+        targetMailbox: "Archive/Invoices",
+        messageReference: {
+          mailObjectId: "100002",
+          accountId: "account-1",
+          accountName: "Work",
+          mailboxPath: "INBOX",
+          dateSent: "2026-04-30T08:39:04.000Z",
+          sender: "sender@example.com",
+          subject: "Invoice",
+        },
+      } as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.moveMessage("Work", "INBOX", "100002", "Archive/Invoices", {
+      dryRun: true,
+    });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.moved).toBe(false);
+
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const accountName = "Work"');
+    expect(script).toContain('const mailboxName = "INBOX"');
+    expect(script).toContain('const mailObjectId = "100002"');
+    expect(script).toContain('const targetMailboxName = "Archive/Invoices"');
+    expect(script).toContain("const dryRun = true");
+    expect(script).toContain("findMessageByObjectId(sourceMailbox, mailObjectId)");
+    expect(script).toContain("if (!dryRun) {");
+    expect(script).toContain("Mail.move(message, { to: targetMailbox })");
+    expect(script).not.toContain("Mail.messages()");
+  });
 });

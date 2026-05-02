@@ -185,6 +185,14 @@ interface MessageArtifactExportResult {
   skippedAttachments: ExportedMessageArtifact[];
 }
 
+interface MessageMoveResult {
+  dryRun: boolean;
+  moved: boolean;
+  sourceMailbox: string;
+  targetMailbox: string;
+  messageReference: MessageReference;
+}
+
 const MESSAGE_FLAG_INDEX_BY_COLOR: Record<MessageFlagColor, number> = {
   none: -1,
   red: 0,
@@ -2220,6 +2228,98 @@ async function exportMessageArtifacts(
   }
 }
 
+async function moveMessage(
+  accountName: string,
+  mailboxName: string,
+  mailObjectId: string,
+  targetMailboxName: string,
+  opts?: {
+    dryRun?: boolean;
+  },
+): Promise<MessageMoveResult> {
+  try {
+    if (!(await checkMailAccess())) {
+      throw new Error("Mail access is not available");
+    }
+
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const escapedMailObjectId = escapeJXAString(mailObjectId);
+    const escapedTargetMailboxName = escapeJXAString(targetMailboxName);
+    const dryRun = opts?.dryRun === true;
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const mailObjectId = "${escapedMailObjectId}";
+      const targetMailboxName = "${escapedTargetMailboxName}";
+      const dryRun = ${dryRun};
+
+      function findMessageByObjectId(mailbox, objectId) {
+        const messages = safeCall(() => mailbox.messages(), []);
+
+        if (!Array.isArray(messages)) {
+          return null;
+        }
+
+        for (const message of messages) {
+          const currentId = toText(safeCall(() => message.id(), null), "");
+          if (currentId === objectId) {
+            return message;
+          }
+        }
+
+        return null;
+      }
+
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const account = accountMatches[0];
+      const sourceMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
+      if (!sourceMailbox) {
+        throw new Error("Source mailbox not found");
+      }
+
+      const targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetMailboxName, accountName);
+      if (!targetMailbox) {
+        throw new Error("Target mailbox not found");
+      }
+
+      const message = findMessageByObjectId(sourceMailbox, mailObjectId);
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      const subject = toText(safeCall(() => message.subject(), null), "No subject");
+      const sender = toText(safeCall(() => message.sender(), null), "Unknown sender");
+      const dateSent = toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()");
+      const sourcePath = mailboxPathFromContainer(sourceMailbox, mailboxName, accountName);
+      const targetPath = mailboxPathFromContainer(targetMailbox, targetMailboxName, accountName);
+      const messageReference = buildMessageReference(message, account, sourcePath, subject, sender, dateSent);
+
+      if (!dryRun) {
+        Mail.move(message, { to: targetMailbox });
+      }
+
+      return JSON.stringify({
+        dryRun,
+        moved: !dryRun,
+        sourceMailbox: sourcePath,
+        targetMailbox: targetPath,
+        messageReference,
+      });
+    `);
+
+    return await executeJXA<MessageMoveResult>(script);
+  } catch (error) {
+    throw toMailError("Error moving message", error);
+  }
+}
+
 async function createMailbox(
   accountName: string,
   parentMailbox: string | null,
@@ -2412,6 +2512,7 @@ const mail = {
   searchMessageMetadata,
   setMessageFlag,
   exportMessageArtifacts,
+  moveMessage,
   createMailbox,
   deleteMailbox,
   renameMailbox,
@@ -2434,6 +2535,7 @@ export {
   exportMessageArtifacts,
   listMessageMetadata,
   listMessages,
+  moveMessage,
   moveMailbox,
   renameMailbox,
   searchMessageMetadata,

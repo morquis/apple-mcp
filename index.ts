@@ -1182,6 +1182,33 @@ function initServer() {
                 };
               }
 
+              case "moveMessage": {
+                if (!args.account || !args.mailbox || !args.mailObjectId || !args.targetMailbox) {
+                  throw new Error("Account, mailbox, mailObjectId, and targetMailbox are required for moveMessage operation");
+                }
+
+                const result = await mailModule.moveMessage(
+                  args.account,
+                  args.mailbox,
+                  args.mailObjectId,
+                  args.targetMailbox,
+                  {
+                    dryRun: args.dryRun,
+                  },
+                );
+                const text =
+                  `Message ${result.messageReference.mailObjectId} ` +
+                  `${result.dryRun ? "would move" : "moved"}: ` +
+                  `${result.sourceMailbox} -> ${result.targetMailbox}\n` +
+                  `Subject: ${result.messageReference.subject}`;
+
+                return {
+                  content: [{ type: "text", text }],
+                  moveResult: result,
+                  isError: false
+                };
+              }
+
               case "createMailbox": {
                 const result = await mailModule.createMailbox(
                   args.account!,
@@ -1910,6 +1937,7 @@ function isMailArgs(args: unknown): args is {
     | "searchMetadata"
     | "setMessageFlag"
     | "exportMessageArtifacts"
+    | "moveMessage"
     | "send"
     | "mailboxes"
     | "accounts"
@@ -1929,6 +1957,7 @@ function isMailArgs(args: unknown): args is {
   name?: string;
   newName?: string;
   targetParent?: string;
+  targetMailbox?: string;
   limit?: number;
   unreadOnly?: boolean;
   startDate?: string;
@@ -1967,6 +1996,7 @@ function isMailArgs(args: unknown): args is {
     name,
     newName,
     targetParent,
+    targetMailbox,
     limit,
     unreadOnly,
     startDate,
@@ -2000,6 +2030,7 @@ function isMailArgs(args: unknown): args is {
     "searchMetadata",
     "setMessageFlag",
     "exportMessageArtifacts",
+    "moveMessage",
     "send",
     "mailboxes",
     "accounts",
@@ -2067,6 +2098,13 @@ function isMailArgs(args: unknown): args is {
       if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
       if (attachmentMode !== undefined && !["documentsOnly", "all"].includes(attachmentMode)) return false;
       if (skipInlineImages !== undefined && typeof skipInlineImages !== "boolean") return false;
+      if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
+      break;
+    case "moveMessage":
+      if (!account || typeof account !== "string") return false;
+      if (!mailbox || typeof mailbox !== "string") return false;
+      if (!mailObjectId || typeof mailObjectId !== "string") return false;
+      if (!targetMailbox || typeof targetMailbox !== "string") return false;
       if (dryRun !== undefined && typeof dryRun !== "boolean") return false;
       break;
     case "send":
@@ -2152,6 +2190,7 @@ function isMailArgs(args: unknown): args is {
   if (name && typeof name !== "string") return false;
   if (newName && typeof newName !== "string") return false;
   if (targetParent && typeof targetParent !== "string") return false;
+  if (targetMailbox && typeof targetMailbox !== "string") return false;
   
   return true;
 }
