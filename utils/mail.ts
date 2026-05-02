@@ -91,6 +91,9 @@ interface EmailMessage {
   dateSent: string;
   content: string;
   isRead: boolean;
+  flaggedStatus?: boolean;
+  flagIndex?: number;
+  flagColor?: MessageFlagColor;
   mailbox: string;
   attachments?: MailAttachment[];
   headers?: string;
@@ -115,6 +118,9 @@ interface EmailMessageMetadata {
   sender: string;
   dateSent: string;
   isRead: boolean;
+  flaggedStatus?: boolean;
+  flagIndex?: number;
+  flagColor?: MessageFlagColor;
   mailbox: string;
   headers?: string;
   messageLink?: string;
@@ -129,6 +135,54 @@ interface MessageMetadataCursor {
 }
 
 type MessageMetadataSearchField = "subject" | "sender" | "attachmentNames";
+
+type MessageFlagColor =
+  | "none"
+  | "red"
+  | "orange"
+  | "yellow"
+  | "green"
+  | "blue"
+  | "purple"
+  | "gray";
+
+interface MessageFlagState {
+  mailObjectId: string;
+  accountName: string;
+  mailboxPath: string;
+  subject: string;
+  sender: string;
+  dateSent: string;
+  flaggedStatus: boolean;
+  flagIndex: number;
+  flagColor: MessageFlagColor;
+}
+
+interface MessageFlagUpdateResult {
+  previous: MessageFlagState;
+  current: MessageFlagState;
+}
+
+const MESSAGE_FLAG_INDEX_BY_COLOR: Record<MessageFlagColor, number> = {
+  none: -1,
+  red: 0,
+  orange: 1,
+  yellow: 2,
+  green: 3,
+  blue: 4,
+  purple: 5,
+  gray: 6,
+};
+
+function normalizeMessageFlagColor(flagColor: string): MessageFlagColor {
+  const normalized = flagColor.toLowerCase();
+
+  if (normalized in MESSAGE_FLAG_INDEX_BY_COLOR) {
+    return normalized as MessageFlagColor;
+  }
+
+  throw new Error(`Unsupported Mail flag color '${flagColor}'`);
+}
 
 interface MessageMetadataPageInfo {
   hasMore: boolean;
@@ -217,6 +271,20 @@ function toStringArray(values) {
   return values
     .map((value) => toText(value, ""))
     .filter((value) => value.length > 0);
+}
+
+function flagColorFromIndex(flagIndex) {
+  const index = Number(flagIndex);
+
+  if (index === 0) return "red";
+  if (index === 1) return "orange";
+  if (index === 2) return "yellow";
+  if (index === 3) return "green";
+  if (index === 4) return "blue";
+  if (index === 5) return "purple";
+  if (index === 6) return "gray";
+
+  return "none";
 }
 
 function getNestedMailboxes(mailboxes) {
@@ -316,6 +384,29 @@ function buildAttachment(attachment) {
   };
 }
 
+function buildMessageFlagState(message, account, mailboxPath) {
+  const flagIndex = toNumber(
+    safeCall(() => (typeof message.flagIndex === "function" ? message.flagIndex() : -1), -1),
+    -1,
+  );
+  const flaggedStatus = toBoolean(
+    safeCall(() => (typeof message.flaggedStatus === "function" ? message.flaggedStatus() : flagIndex >= 0), flagIndex >= 0),
+    flagIndex >= 0,
+  );
+
+  return {
+    mailObjectId: toText(safeCall(() => message.id(), null), ""),
+    accountName: toText(safeCall(() => account.name(), null), ""),
+    mailboxPath,
+    subject: toText(safeCall(() => message.subject(), null), "No subject"),
+    sender: toText(safeCall(() => message.sender(), null), "Unknown sender"),
+    dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
+    flaggedStatus,
+    flagIndex,
+    flagColor: flaggedStatus ? flagColorFromIndex(flagIndex) : "none",
+  };
+}
+
 function normalizeMessageId(messageId) {
   const text = toText(messageId, "").trim();
 
@@ -376,12 +467,23 @@ function buildMessageReference(message, account, mailboxPath, subject, sender, d
 }
 
 function buildMessage(message, mailboxName, includeAttachments, includeHeaders) {
+  const flagIndex = toNumber(
+    safeCall(() => (typeof message.flagIndex === "function" ? message.flagIndex() : -1), -1),
+    -1,
+  );
+  const flaggedStatus = toBoolean(
+    safeCall(() => (typeof message.flaggedStatus === "function" ? message.flaggedStatus() : flagIndex >= 0), flagIndex >= 0),
+    flagIndex >= 0,
+  );
   const result = {
     subject: toText(safeCall(() => message.subject(), null), "No subject"),
     sender: toText(safeCall(() => message.sender(), null), "Unknown sender"),
     dateSent: toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()"),
     content: getContentPreview(message),
     isRead: toBoolean(safeCall(() => message.readStatus(), false), false),
+    flaggedStatus,
+    flagIndex,
+    flagColor: flaggedStatus ? flagColorFromIndex(flagIndex) : "none",
     mailbox: mailboxName,
   };
 
@@ -403,6 +505,14 @@ function buildMessageMetadata(message, account, mailboxName, includeAttachmentNa
   const subject = toText(safeCall(() => message.subject(), null), "No subject");
   const sender = toText(safeCall(() => message.sender(), null), "Unknown sender");
   const dateSent = toISO(safeCall(() => message.dateSent(), null), "new Date().toISOString()");
+  const flagIndex = toNumber(
+    safeCall(() => (typeof message.flagIndex === "function" ? message.flagIndex() : -1), -1),
+    -1,
+  );
+  const flaggedStatus = toBoolean(
+    safeCall(() => (typeof message.flaggedStatus === "function" ? message.flaggedStatus() : flagIndex >= 0), flagIndex >= 0),
+    flagIndex >= 0,
+  );
   const messageId = safeCall(
     () => (typeof message.messageId === "function" ? message.messageId() : null),
     null,
@@ -412,6 +522,9 @@ function buildMessageMetadata(message, account, mailboxName, includeAttachmentNa
     sender,
     dateSent,
     isRead: toBoolean(safeCall(() => message.readStatus(), false), false),
+    flaggedStatus,
+    flagIndex,
+    flagColor: flaggedStatus ? flagColorFromIndex(flagIndex) : "none",
     mailbox: mailboxName,
     messageLink: createMessageLinkFromMessageId(messageId, subject),
     messageReference: buildMessageReference(message, account, mailboxName, subject, sender, dateSent),
@@ -1669,6 +1782,94 @@ async function searchMessageMetadata(
   });
 }
 
+async function setMessageFlag(
+  accountName: string,
+  mailboxName: string,
+  mailObjectId: string,
+  flagColor: MessageFlagColor,
+): Promise<MessageFlagUpdateResult> {
+  try {
+    const normalizedFlagColor = normalizeMessageFlagColor(flagColor);
+
+    if (!(await checkMailAccess())) {
+      throw new Error("Mail access is not available");
+    }
+
+    const flagIndex = MESSAGE_FLAG_INDEX_BY_COLOR[normalizedFlagColor];
+    const escapedAccountName = escapeJXAString(accountName);
+    const escapedMailboxName = escapeJXAString(mailboxName);
+    const escapedMailObjectId = escapeJXAString(mailObjectId);
+
+    const script = buildMailScript(`
+      const Mail = Application("Mail");
+      const accountName = "${escapedAccountName}";
+      const mailboxName = "${escapedMailboxName}";
+      const mailObjectId = "${escapedMailObjectId}";
+      const flagIndex = ${flagIndex};
+
+      function findMessageByObjectId(mailbox, objectId) {
+        const messages = safeCall(() => mailbox.messages(), []);
+
+        if (!Array.isArray(messages)) {
+          return null;
+        }
+
+        for (const message of messages) {
+          const currentId = toText(safeCall(() => message.id(), null), "");
+          if (currentId === objectId) {
+            return message;
+          }
+        }
+
+        return null;
+      }
+
+      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
+      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
+        throw new Error("Account not found");
+      }
+
+      const account = accountMatches[0];
+      let targetMailbox = null;
+      const directMatch = mailboxName.indexOf("/") < 0
+        ? safeCall(() => account.mailboxes.whose({ name: mailboxName })(), [])
+        : [];
+      if (Array.isArray(directMatch) && directMatch.length > 0) {
+        targetMailbox = directMatch[0];
+      } else {
+        targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
+      }
+
+      if (!targetMailbox) {
+        throw new Error("Mailbox not found");
+      }
+
+      const message = findMessageByObjectId(targetMailbox, mailObjectId);
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      const resolvedMailboxName = mailboxPathFromContainer(targetMailbox, mailboxName, accountName);
+      const previous = buildMessageFlagState(message, account, resolvedMailboxName);
+
+      if (flagIndex < 0) {
+        message.flaggedStatus = false;
+        message.flagIndex = -1;
+      } else {
+        message.flagIndex = flagIndex;
+        message.flaggedStatus = true;
+      }
+
+      const current = buildMessageFlagState(message, account, resolvedMailboxName);
+      return JSON.stringify({ previous, current });
+    `);
+
+    return await executeJXA<MessageFlagUpdateResult>(script);
+  } catch (error) {
+    throw toMailError("Error setting message flag", error);
+  }
+}
+
 async function createMailbox(
   accountName: string,
   parentMailbox: string | null,
@@ -1859,6 +2060,7 @@ const mail = {
   listMessages,
   listMessageMetadata,
   searchMessageMetadata,
+  setMessageFlag,
   createMailbox,
   deleteMailbox,
   renameMailbox,
@@ -1885,6 +2087,7 @@ export {
   searchMessageMetadata,
   searchMails,
   sendMail,
+  setMessageFlag,
 };
 
 export default mail;

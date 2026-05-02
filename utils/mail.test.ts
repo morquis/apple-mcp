@@ -402,4 +402,62 @@ describe("mail", () => {
       "startDate and endDate are required for metadata search",
     );
   });
+
+  it("setMessageFlag sets a scoped Mail flag by object id", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce({
+        previous: {
+          mailObjectId: "100001",
+          accountName: "Work",
+          mailboxPath: "Archive/Facility",
+          subject: "Invoice",
+          sender: "sender@example.com",
+          dateSent: "2026-04-20T10:00:00.000Z",
+          flaggedStatus: false,
+          flagIndex: -1,
+          flagColor: "none",
+        },
+        current: {
+          mailObjectId: "100001",
+          accountName: "Work",
+          mailboxPath: "Archive/Facility",
+          subject: "Invoice",
+          sender: "sender@example.com",
+          dateSent: "2026-04-20T10:00:00.000Z",
+          flaggedStatus: true,
+          flagIndex: 1,
+          flagColor: "orange",
+        },
+      } as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.setMessageFlag("Work", "Archive/Facility", "100001", "orange");
+
+    expect(result.current.flagColor).toBe("orange");
+    expect(result.current.flagIndex).toBe(1);
+
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const accountName = "Work"');
+    expect(script).toContain('const mailboxName = "Archive/Facility"');
+    expect(script).toContain('const mailObjectId = "100001"');
+    expect(script).toContain("const flagIndex = 1");
+    expect(script).toContain("findMessageByObjectId(targetMailbox, mailObjectId)");
+    expect(script).toContain("message.flagIndex = flagIndex");
+    expect(script).toContain("message.flaggedStatus = true");
+    expect(script).not.toContain("Mail.messages()");
+  });
+
+  it("setMessageFlag rejects unsupported colors", async () => {
+    const mailModule = await importMail();
+
+    await expect(
+      mailModule.setMessageFlag("Work", "Archive/Invoices", "100001", "pink" as any),
+    ).rejects.toThrow("Unsupported Mail flag color 'pink'");
+  });
 });

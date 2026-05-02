@@ -1025,6 +1025,9 @@ function initServer() {
                     msgText += `Date: ${m.dateSent}\n`;
                     msgText += `Subject: ${m.subject}\n`;
                     msgText += `Read: ${m.isRead ? "Yes" : "No"}\n`;
+                    if (m.flagColor !== undefined) {
+                      msgText += `Flag: ${m.flagColor} (${m.flagIndex ?? -1})\n`;
+                    }
                     msgText += `Mailbox: ${m.mailbox}\n`;
                     if (m.messageReference) {
                       msgText += `Reference: mailObjectId=${m.messageReference.mailObjectId}`;
@@ -1083,6 +1086,9 @@ function initServer() {
                     msgText += `Date: ${m.dateSent}\n`;
                     msgText += `Subject: ${m.subject}\n`;
                     msgText += `Read: ${m.isRead ? "Yes" : "No"}\n`;
+                    if (m.flagColor !== undefined) {
+                      msgText += `Flag: ${m.flagColor} (${m.flagIndex ?? -1})\n`;
+                    }
                     msgText += `Mailbox: ${m.mailbox}\n`;
                     if (m.messageReference) {
                       msgText += `Reference: mailObjectId=${m.messageReference.mailObjectId}`;
@@ -1111,6 +1117,31 @@ function initServer() {
                   content: [{ type: "text", text: textContent }],
                   messages,
                   pageInfo,
+                  isError: false
+                };
+              }
+
+              case "setMessageFlag": {
+                if (!args.account || !args.mailbox || !args.mailObjectId || !args.flagColor) {
+                  throw new Error("Account, mailbox, mailObjectId, and flagColor are required for setMessageFlag operation");
+                }
+
+                const result = await mailModule.setMessageFlag(
+                  args.account,
+                  args.mailbox,
+                  args.mailObjectId,
+                  args.flagColor,
+                );
+                const text =
+                  `Message ${result.current.mailObjectId} flag: ` +
+                  `${result.previous.flagColor} (${result.previous.flagIndex}) -> ` +
+                  `${result.current.flagColor} (${result.current.flagIndex})\n` +
+                  `Subject: ${result.current.subject}\n` +
+                  `Mailbox: ${result.current.mailboxPath}`;
+
+                return {
+                  content: [{ type: "text", text }],
+                  messageFlag: result,
                   isError: false
                 };
               }
@@ -1841,6 +1872,7 @@ function isMailArgs(args: unknown): args is {
     | "latest"
     | "search"
     | "searchMetadata"
+    | "setMessageFlag"
     | "send"
     | "mailboxes"
     | "accounts"
@@ -1866,6 +1898,8 @@ function isMailArgs(args: unknown): args is {
   endDate?: string;
   searchTerm?: string;
   searchFields?: Array<"subject" | "sender" | "attachmentNames">;
+  mailObjectId?: string;
+  flagColor?: "none" | "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "gray";
   to?: string;
   subject?: string;
   body?: string;
@@ -1897,6 +1931,8 @@ function isMailArgs(args: unknown): args is {
     endDate,
     searchTerm,
     searchFields,
+    mailObjectId,
+    flagColor,
     to,
     subject,
     body,
@@ -1915,6 +1951,7 @@ function isMailArgs(args: unknown): args is {
     "latest",
     "search",
     "searchMetadata",
+    "setMessageFlag",
     "send",
     "mailboxes",
     "accounts",
@@ -1961,6 +1998,16 @@ function isMailArgs(args: unknown): args is {
           !Array.isArray(searchFields) ||
           !searchFields.every((field) => ["subject", "sender", "attachmentNames"].includes(field))
         )
+      ) return false;
+      break;
+    case "setMessageFlag":
+      if (!account || typeof account !== "string") return false;
+      if (!mailbox || typeof mailbox !== "string") return false;
+      if (!mailObjectId || typeof mailObjectId !== "string") return false;
+      if (
+        !flagColor ||
+        typeof flagColor !== "string" ||
+        !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor)
       ) return false;
       break;
     case "send":
@@ -2034,6 +2081,8 @@ function isMailArgs(args: unknown): args is {
   if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
   if (headerFilter !== undefined && (!Array.isArray(headerFilter) || !headerFilter.every(h => typeof h === "string"))) return false;
   if (searchFields !== undefined && (!Array.isArray(searchFields) || !searchFields.every(field => ["subject", "sender", "attachmentNames"].includes(field)))) return false;
+  if (mailObjectId !== undefined && typeof mailObjectId !== "string") return false;
+  if (flagColor !== undefined && (typeof flagColor !== "string" || !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor))) return false;
   if (sort !== undefined && !["dateSentAsc", "dateSentDesc"].includes(sort)) return false;
   if (parentMailbox && typeof parentMailbox !== "string") return false;
   if (name && typeof name !== "string") return false;

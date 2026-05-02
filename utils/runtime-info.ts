@@ -10,6 +10,7 @@ const MAIL_DISPATCH_OPERATIONS = [
   "latest",
   "search",
   "searchMetadata",
+  "setMessageFlag",
   "send",
   "mailboxes",
   "accounts",
