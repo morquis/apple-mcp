@@ -6,6 +6,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import tools from "./tools.js";
+import { getRuntimeInfo } from "./utils/runtime-info.js";
 
 interface WebSearchArgs {
   query: string;
@@ -215,11 +216,23 @@ function initServer() {
     try {
       const { name, arguments: args } = request.params;
 
-      if (!args) {
+      if (!args && name !== "runtimeInfo") {
         throw new Error("No arguments provided");
       }
 
       switch (name) {
+        case "runtimeInfo": {
+          const info = await getRuntimeInfo();
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify(info, null, 2),
+            }],
+            runtimeInfo: info,
+            isError: false,
+          };
+        }
+
         case "contacts": {
           if (!isContactsArgs(args)) {
             throw new Error("Invalid arguments for contacts tool");

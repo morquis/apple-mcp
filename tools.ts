@@ -1,5 +1,14 @@
 import { type Tool } from "@modelcontextprotocol/sdk/types.js";
 
+const RUNTIME_INFO_TOOL: Tool = {
+  name: "runtimeInfo",
+  description: "Report apple-mcp runtime, build, git, and tool capability information without accessing Apple apps.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+  },
+};
+
 const CONTACTS_TOOL: Tool = {
     name: "contacts",
     description: "Search, create, update, and delete contacts in Apple Contacts. Search returns full contact details including ID for follow-up operations.",
@@ -529,6 +538,7 @@ const MUSIC_TOOL: Tool = {
 };
 
 const tools = [
+  RUNTIME_INFO_TOOL,
   CONTACTS_TOOL,
   NOTES_TOOL,
   MESSAGES_TOOL,
