@@ -1,6 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  _runWithChild,
+  DEFAULT_KILL_GRACE_MS,
   executeJXA,
   JXAAppNotRunningError,
   JXAConverters,
@@ -84,5 +89,69 @@ describe("executeJXA", () => {
 
     expect(error).toBeInstanceOf(JXAExecutionError);
     expect(error.appName).toBe("Mail");
+  });
+
+  it("exports a sane SIGKILL-grace default", () => {
+    expect(DEFAULT_KILL_GRACE_MS).toBeGreaterThanOrEqual(1_000);
+    expect(DEFAULT_KILL_GRACE_MS).toBeLessThanOrEqual(30_000);
+  });
+});
+
+// SIGKILL escalation against a child that ignores SIGTERM.
+// We start a bash wrapper with `trap '' TERM` (ignoring SIGTERM) plus
+// a `sleep`. This path only exists because `osascript` sometimes ignores
+// SIGTERM in practice while an Apple Events IPC call is active. The
+// wrapper simulates the behavior deterministically.
+describe("executeJXA SIGKILL escalation", () => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "jxa-bridge-sigterm-"));
+  const scriptPath = join(fixtureDir, "ignore-sigterm.sh");
+  writeFileSync(
+    scriptPath,
+    "#!/bin/bash\ntrap '' TERM\nsleep 60\n",
+    { mode: 0o755 },
+  );
+  chmodSync(scriptPath, 0o755);
+
+  afterAll(() => {
+    rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    const start = Date.now();
+    let rejectionTime = 0;
+
+    await expect(
+      _runWithChild("/bin/bash", [scriptPath], "<sigterm-ignore-fixture>", {
+        timeout: 200,
+        killGraceMs: 400,
+        parseJSON: false,
+      }).catch((err) => {
+        rejectionTime = Date.now() - start;
+        throw err;
+      }),
+    ).rejects.toMatchObject({
+      name: "JXAExecutionError",
+      timedOut: true,
+      timeoutMs: 200,
+    });
+
+    // Promise rejection fires immediately on timeout (not only after grace).
+    expect(rejectionTime).toBeLessThan(800);
+
+    // Wait safely past the SIGKILL escalation so the child is really dead
+    // before the test ends.
+    await new Promise((r) => setTimeout(r, 800));
+  }, 5_000);
+
+  it("does not escalate when the child exits normally before timeout", async () => {
+    // /bin/echo finishes immediately; escalation timer must not even
+    // start running, otherwise it would block the unref'ed hard exit.
+    const result = await _runWithChild<string>(
+      "/bin/echo",
+      ["hello"],
+      "<echo-fixture>",
+      { parseJSON: false, timeout: 5_000, killGraceMs: 100 },
+    );
+    expect(result).toBe("hello");
   });
 });

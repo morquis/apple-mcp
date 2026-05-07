@@ -3,7 +3,21 @@ import { spawn } from "node:child_process";
 export interface JXAExecutionOptions {
   timeout?: number;
   parseJSON?: boolean;
+  /**
+   * Grace period in ms after a SIGTERM (sent on timeout) before escalating to
+   * SIGKILL. osascript sometimes ignores SIGTERM while it is blocked inside an
+   * Apple Events IPC call; without escalation the child outlives the test
+   * process and gets adopted by launchd. Defaults to {@link DEFAULT_KILL_GRACE_MS}.
+   */
+  killGraceMs?: number;
 }
+
+/**
+ * Default delay before escalating from SIGTERM to SIGKILL on timeout.
+ * The promise is already rejected at the SIGTERM point, so this only affects
+ * how long we wait before we forcibly clean up an unresponsive child.
+ */
+export const DEFAULT_KILL_GRACE_MS = 5_000;
 
 export interface JXAErrorContext {
   script: string;
@@ -120,26 +134,40 @@ export class JXAAppNotRunningError extends JXAExecutionError {
   }
 }
 
-export function executeJXA<T = unknown>(
-  script: string,
-  options?: JXAExecutionOptions & { parseJSON?: true },
-): Promise<T>;
-export function executeJXA(
-  script: string,
-  options: JXAExecutionOptions & { parseJSON: false },
-): Promise<string>;
-export async function executeJXA<T = unknown>(
+/**
+ * Internal seam for tests: lets jxa-bridge.test.ts substitute the spawned
+ * binary with a wrapper that ignores SIGTERM, so the SIGKILL escalation path
+ * can be exercised deterministically. Production code paths always use
+ * "osascript" — do not call this directly outside of tests.
+ *
+ * @internal
+ */
+export async function _runWithChild<T = unknown>(
+  command: string,
+  args: readonly string[],
   script: string,
   options: JXAExecutionOptions = {},
 ): Promise<T | string> {
-  const { timeout = 30_000, parseJSON = true } = options;
+  const {
+    timeout = 30_000,
+    parseJSON = true,
+    killGraceMs = DEFAULT_KILL_GRACE_MS,
+  } = options;
 
   return new Promise<T | string>((resolve, reject) => {
-    const child = spawn("osascript", ["-l", "JavaScript", "-e", script]);
+    const child = spawn(command, args);
 
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const clearKillEscalation = () => {
+      if (killEscalationTimer !== undefined) {
+        clearTimeout(killEscalationTimer);
+        killEscalationTimer = undefined;
+      }
+    };
 
     const settle = (handler: () => void) => {
       if (settled) {
@@ -153,7 +181,23 @@ export async function executeJXA<T = unknown>(
 
     const timer = setTimeout(() => {
       const context = buildErrorContext(script, timeout, stdout, stderr, null, null, true);
-      child.kill();
+      child.kill("SIGTERM");
+      // osascript can ignore SIGTERM while it is blocked inside an Apple Events
+      // IPC call (e.g. iterating ~3000 Contacts entries with active CloudKit
+      // sync). Escalate to SIGKILL if the child has not exited within the grace
+      // period — the parent promise has already rejected by then, so this only
+      // prevents the orphaned child from being adopted by launchd.
+      killEscalationTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Child may have exited between the check and the kill — harmless.
+          }
+        }
+      }, killGraceMs);
+      // Don't keep the event loop alive just for the escalation timer.
+      killEscalationTimer.unref?.();
       settle(() => {
         reject(new JXAExecutionError(`JXA execution timed out after ${timeout} ms`, context));
       });
@@ -168,6 +212,7 @@ export async function executeJXA<T = unknown>(
     });
 
     child.on("error", (error) => {
+      clearKillEscalation();
       const context = buildErrorContext(script, timeout, stdout, stderr);
       settle(() => {
         reject(new JXAExecutionError("Failed to spawn osascript", context, error));
@@ -175,6 +220,7 @@ export async function executeJXA<T = unknown>(
     });
 
     child.on("close", (exitCode, signal) => {
+      clearKillEscalation();
       const context = buildErrorContext(script, timeout, stdout, stderr, exitCode, signal);
       settle(() => {
         if (context.timedOut) {
@@ -236,6 +282,26 @@ export async function executeJXA<T = unknown>(
       });
     });
   });
+}
+
+export function executeJXA<T = unknown>(
+  script: string,
+  options?: JXAExecutionOptions & { parseJSON?: true },
+): Promise<T>;
+export function executeJXA(
+  script: string,
+  options: JXAExecutionOptions & { parseJSON: false },
+): Promise<string>;
+export function executeJXA<T = unknown>(
+  script: string,
+  options: JXAExecutionOptions = {},
+): Promise<T | string> {
+  return _runWithChild<T>(
+    "osascript",
+    ["-l", "JavaScript", "-e", script],
+    script,
+    options,
+  );
 }
 
 export function wrapJXAFunction(functionBody: string): string {
