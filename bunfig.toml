@@ -1,0 +1,5 @@
+[test]
+# Hard watchdog for integration test runs (only fires when
+# APPLE_MCP_INTEGRATION=1). See tests/integration/helpers/watchdog.ts.
+# Unit tests are unaffected: the preload module is no-op without the env var.
+preload = ["./tests/integration/helpers/watchdog.ts"]
