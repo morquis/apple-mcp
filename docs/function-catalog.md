@@ -173,37 +173,11 @@ Lists messages in a mailbox with optional filters.
 {"tool":"mail","operation":"messages","account":"Work","mailbox":"Inbox","limit":5,"includeAttachments":true}
 ```
 
-### `createMailbox`
-Creates a mailbox.
-
-**Example**
-```json
-{"tool":"mail","operation":"createMailbox","account":"Work","parentMailbox":null,"name":"Project"}
-```
-
-### `deleteMailbox`
-Deletes a mailbox.
-
-**Example**
-```json
-{"tool":"mail","operation":"deleteMailbox","account":"Work","mailbox":"Old"}
-```
-
-### `renameMailbox`
-Renames a mailbox.
-
-**Example**
-```json
-{"tool":"mail","operation":"renameMailbox","account":"Work","mailbox":"Old","newName":"Archive"}
-```
-
-### `moveMailbox`
-Moves a mailbox under another mailbox.
-
-**Example**
-```json
-{"tool":"mail","operation":"moveMailbox","account":"Work","mailbox":"Project","targetParent":"Archive"}
-```
+Structural mailbox operations (`createMailbox`, `deleteMailbox`, `renameMailbox`,
+and `moveMailbox`) are not exposed because Apple Mail Automation is not robust
+for Exchange/M365 mailbox structure changes. Create, delete, rename, or move
+folders manually or through a server-side mail API. Use `moveMessage` to move
+messages into existing folders.
 
 ## Reminders
 
@@ -392,4 +366,3 @@ Performs a DuckDuckGo search and fetches result contents.
 ```json
 {"tool":"webSearch","query":"weather"}
 ```
-

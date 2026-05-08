@@ -92,19 +92,9 @@ integrationDescribe("mail integration", () => {
     }
   }, INTEGRATION_TIMEOUT);
 
-  it("createMailbox creates a mailbox", async () => {
-    if (!firstAccount) {
-      const accounts = await mail.getAccounts();
-      if (accounts.length === 0) return;
-      firstAccount = accounts[0];
-    }
-
-    const mbName = uniqueName("mailbox");
-    cleanup.track(async () => {
-      try { await mail.deleteMailbox(firstAccount!, mbName); } catch {}
-    });
-
-    const createResult = await mail.createMailbox(firstAccount, null, mbName);
-    expect(createResult).toContain("Created");
+  it("createMailbox reports unsupported", async () => {
+    await expect(
+      mail.createMailbox(firstAccount ?? "Work", null, uniqueName("mailbox")),
+    ).rejects.toThrow("structural mailbox operations are not supported via Apple Mail Automation");
   }, INTEGRATION_TIMEOUT);
 });

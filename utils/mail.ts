@@ -191,6 +191,9 @@ interface MessageMoveResult {
   messageReference: MessageReference;
 }
 
+const UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE =
+  "Unsupported: structural mailbox operations are not supported via Apple Mail Automation. Create, delete, rename, or move mailboxes manually in Apple Mail or use a robust server-side mail API. Moving messages with moveMessage to existing mailboxes remains supported.";
+
 const MESSAGE_FLAG_INDEX_BY_COLOR: Record<MessageFlagColor, number> = {
   none: -1,
   red: 0,
@@ -244,12 +247,21 @@ interface MailboxInfo {
   id: string;
   path: string;
   parentPath: string | null;
-  unreadCount: number;
-  totalCount: number;
-  directUnreadCount: number;
-  directMessageCount: number;
-  directChildCount: number;
+  unreadCount: number | null;
+  totalCount: number | null;
+  directUnreadCount: number | null;
+  directMessageCount: number | null;
+  directChildCount: number | null;
   children: MailboxInfo[];
+}
+
+type MailboxCountsMode = "none" | "unread" | "all";
+type MailboxStructureMode = "flat" | "nested";
+
+interface MailboxQueryOptions {
+  mailboxCounts?: MailboxCountsMode;
+  mailboxStructure?: MailboxStructureMode;
+  timeoutMs?: number;
 }
 
 interface MailAccountDetails extends MailAccount {
@@ -412,6 +424,58 @@ function findMailboxRecursive(mailboxes, targetName, accountName = "") {
   }
 
   return null;
+}
+
+function mailboxPathSegments(path) {
+  return toText(path, "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+function findDirectMailboxByName(container, name) {
+  const matches = safeCall(() => container.mailboxes.whose({ name })(), []);
+  return Array.isArray(matches) && matches.length > 0 ? matches[0] : null;
+}
+
+function normalizeMailboxPathForCompare(path) {
+  return toText(path, "").normalize("NFC");
+}
+
+function findMailboxByPathInAccount(account, targetPath, accountName = "") {
+  const segments = mailboxPathSegments(targetPath);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const leafName = segments[segments.length - 1];
+  const normalizedTargetPath = normalizeMailboxPathForCompare(segments.join("/"));
+  const candidates = safeCall(() => account.mailboxes.whose({ name: leafName })(), []);
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    const candidatePath = mailboxPathFromContainer(candidate, leafName, accountName);
+    if (normalizeMailboxPathForCompare(candidatePath) === normalizedTargetPath) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function findMailboxInAccount(account, targetName, accountName = "") {
+  if (targetName.indexOf("/") >= 0) {
+    return findMailboxByPathInAccount(account, targetName, accountName);
+  }
+
+  const directMatch = findDirectMailboxByName(account, targetName);
+  if (directMatch) {
+    return directMatch;
+  }
+
+  return findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetName, accountName);
 }
 
 function getHeaders(message) {
@@ -630,20 +694,23 @@ function buildMessageMetadata(message, account, mailboxName, includeAttachmentNa
   return result;
 }
 
-function buildMailboxSummary(mailbox) {
-  const messages = safeCall(() => mailbox.messages(), []);
-  const children = safeCall(() => mailbox.mailboxes(), []);
+function buildMailboxSummary(mailbox, children, countOptions) {
+  const includeUnreadCounts = countOptions && countOptions.includeUnreadCounts === true;
+  const includeMessageCounts = countOptions && countOptions.includeMessageCounts === true;
   const name = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
-  const unreadCount = toNumber(
-    safeCall(() => (typeof mailbox.unreadCount === "function" ? mailbox.unreadCount() : 0), 0),
-    0,
-  );
-  const directMessageCount = Array.isArray(messages) ? messages.length : 0;
-  const directChildCount = Array.isArray(children) ? children.length : 0;
+  const unreadCount = includeUnreadCounts
+    ? toNumber(
+        safeCall(() => (typeof mailbox.unreadCount === "function" ? mailbox.unreadCount() : 0), 0),
+        0,
+      )
+    : null;
+  const messages = includeMessageCounts ? safeCall(() => mailbox.messages(), []) : null;
+  const directMessageCount = Array.isArray(messages) ? messages.length : null;
+  const directChildCount = Array.isArray(children) ? children.length : null;
 
   return {
     name,
-    id: toText(safeCall(() => mailbox.id(), null), ""),
+    id: "",
     path: name,
     parentPath: null,
     unreadCount,
@@ -656,7 +723,8 @@ function buildMailboxSummary(mailbox) {
 }
 
 function mailboxPathFromContainer(mailbox, fallbackPath, accountName) {
-  const pathParts = [toText(safeCall(() => mailbox.name(), null), "Unknown mailbox")];
+  const mailboxName = toText(safeCall(() => mailbox.name(), null), "");
+  const pathParts = [mailboxName || fallbackPath || "Unknown mailbox"];
   let currentMailbox = mailbox;
 
   for (let i = 0; i < 25; i += 1) {
@@ -686,12 +754,11 @@ function parentPathFromPath(path) {
   return index > 0 ? path.slice(0, index) : null;
 }
 
-function buildMailboxInfo(mailbox, recursive, fallbackPath = "", accountName = "") {
-  const summary = buildMailboxSummary(mailbox);
+function buildMailboxInfo(mailbox, recursive, fallbackPath = "", accountName = "", countOptions = {}) {
+  const children = safeCall(() => mailbox.mailboxes(), []);
+  const summary = buildMailboxSummary(mailbox, children, countOptions);
   summary.path = mailboxPathFromContainer(mailbox, fallbackPath || summary.name, accountName);
   summary.parentPath = parentPathFromPath(summary.path);
-
-  const children = safeCall(() => mailbox.mailboxes(), []);
 
   if (!Array.isArray(children)) {
     return summary;
@@ -699,26 +766,28 @@ function buildMailboxInfo(mailbox, recursive, fallbackPath = "", accountName = "
 
   summary.children = children.map((child) =>
     recursive
-      ? buildMailboxInfo(child, true, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName)
-      : buildMailboxInfo(child, false, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName),
+      ? buildMailboxInfo(child, true, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName, countOptions)
+      : buildMailboxInfo(child, false, summary.path + "/" + toText(safeCall(() => child.name(), null), "Unknown mailbox"), accountName, countOptions),
   );
 
   return summary;
 }
 
-function buildMailboxTree(mailboxes, accountName) {
+function buildMailboxTree(mailboxes, accountName, countOptions) {
   const byPath = {};
 
   function collect(mailbox, fallbackParentPath) {
     const mailboxName = toText(safeCall(() => mailbox.name(), null), "Unknown mailbox");
     const fallbackPath = fallbackParentPath ? fallbackParentPath + "/" + mailboxName : mailboxName;
-    const summary = buildMailboxInfo(mailbox, false, fallbackPath, accountName);
+    const children = safeCall(() => mailbox.mailboxes(), []);
+    const summary = buildMailboxSummary(mailbox, children, countOptions);
+    summary.path = mailboxPathFromContainer(mailbox, fallbackPath || summary.name, accountName);
+    summary.parentPath = parentPathFromPath(summary.path);
 
     if (!byPath[summary.path]) {
       byPath[summary.path] = { ...summary, children: [] };
     }
 
-    const children = safeCall(() => mailbox.mailboxes(), []);
     if (Array.isArray(children)) {
       for (const child of children) {
         collect(child, summary.path);
@@ -760,6 +829,21 @@ function buildMailboxTree(mailboxes, accountName) {
 
   return roots;
 }
+
+function buildFlatMailboxList(mailboxes, countOptions) {
+  const result = [];
+
+  for (const mailbox of Array.isArray(mailboxes) ? mailboxes : []) {
+    const summary = buildMailboxSummary(mailbox, null, countOptions);
+    summary.path = summary.name;
+    summary.parentPath = null;
+    summary.children = [];
+    result.push(summary);
+  }
+
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  return result;
+}
 `;
 
 function buildMailScript(functionBody: string): string {
@@ -792,6 +876,22 @@ function normalizeMetadataSearchFields(
   const normalized = fields.filter((field): field is MessageMetadataSearchField => allowed.has(field));
 
   return normalized.length > 0 ? Array.from(new Set(normalized)) : ["subject", "sender"];
+}
+
+function normalizeMailboxCountsMode(mode: MailboxCountsMode | undefined): MailboxCountsMode {
+  return mode ?? "none";
+}
+
+function normalizeMailboxStructureMode(mode: MailboxStructureMode | undefined): MailboxStructureMode {
+  return mode ?? "flat";
+}
+
+function normalizeMailboxTimeoutMs(timeoutMs: number | undefined): number | undefined {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
+    return undefined;
+  }
+
+  return Math.min(300_000, Math.max(1_000, Math.trunc(timeoutMs)));
 }
 
 function emptyMessageMetadataPage(
@@ -1366,6 +1466,7 @@ async function getAccountDetails(accountName: string): Promise<MailAccountDetail
 async function getMailboxProperties(
   accountName: string,
   mailboxName: string,
+  opts?: MailboxQueryOptions,
 ): Promise<MailboxInfo | undefined> {
   try {
     if (!(await checkMailAccess())) {
@@ -1374,41 +1475,63 @@ async function getMailboxProperties(
 
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
+    const mailboxCounts = normalizeMailboxCountsMode(opts?.mailboxCounts);
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const script = buildMailScript(`
       const Mail = Application("Mail");
       const accountName = "${escapedAccountName}";
       const mailboxName = "${escapedMailboxName}";
+      const mailboxCounts = "${mailboxCounts}";
+      const countOptions = {
+        includeUnreadCounts: mailboxCounts === "unread" || mailboxCounts === "all",
+        includeMessageCounts: mailboxCounts === "all",
+      };
       const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
       if (!Array.isArray(matches) || matches.length === 0) {
         return JSON.stringify(null);
       }
 
-      const mailbox = findMailboxRecursive(safeCall(() => matches[0].mailboxes(), []), mailboxName, accountName);
+      const mailbox = findMailboxInAccount(matches[0], mailboxName, accountName);
       if (!mailbox) {
         return JSON.stringify(null);
       }
 
-      return JSON.stringify(buildMailboxInfo(mailbox, false, mailboxName, accountName));
+      return JSON.stringify(buildMailboxInfo(mailbox, false, mailboxName, accountName, countOptions));
     `);
 
-    const info = await executeJXA<MailboxInfo | null>(script);
+    const info = await executeJXA<MailboxInfo | null>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
     return info ?? undefined;
   } catch (error) {
     throw toMailError("Error getting mailbox properties", error);
   }
 }
 
-async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]> {
+async function getAccountMailboxTree(
+  accountName: string,
+  opts?: MailboxQueryOptions,
+): Promise<MailboxInfo[]> {
   try {
     if (!(await checkMailAccess())) {
       return [];
     }
 
     const escapedAccountName = escapeJXAString(accountName);
+    const mailboxCounts = normalizeMailboxCountsMode(opts?.mailboxCounts);
+    const mailboxStructure = normalizeMailboxStructureMode(opts?.mailboxStructure);
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const script = buildMailScript(`
       const Mail = Application("Mail");
       const accountName = "${escapedAccountName}";
+      const mailboxCounts = "${mailboxCounts}";
+      const mailboxStructure = "${mailboxStructure}";
+      const countOptions = {
+        includeUnreadCounts: mailboxCounts === "unread" || mailboxCounts === "all",
+        includeMessageCounts: mailboxCounts === "all",
+      };
       const matches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
 
       if (!Array.isArray(matches) || matches.length === 0) {
@@ -1416,12 +1539,17 @@ async function getAccountMailboxTree(accountName: string): Promise<MailboxInfo[]
       }
 
       const mailboxes = safeCall(() => matches[0].mailboxes(), []);
-      const result = buildMailboxTree(mailboxes, accountName);
+      const result = mailboxStructure === "nested"
+        ? buildMailboxTree(mailboxes, accountName, countOptions)
+        : buildFlatMailboxList(mailboxes, countOptions);
 
       return JSON.stringify(result);
     `);
 
-    const tree = await executeJXA<MailboxInfo[] | null>(script);
+    const tree = await executeJXA<MailboxInfo[] | null>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
 
     if (!tree) {
       throw new Error(`Account '${accountName}' not found`);
@@ -1479,22 +1607,7 @@ async function listMessages(
         return JSON.stringify([]);
       }
 
-      // Try direct .whose() first (fast), fall back to recursive search
-      let targetMailbox = null;
-      const directMatch = safeCall(
-        () => accountMatches[0].mailboxes.whose({ name: mailboxName })(),
-        [],
-      );
-      if (Array.isArray(directMatch) && directMatch.length > 0) {
-        targetMailbox = directMatch[0];
-      } else {
-        // Fallback: recursive search for nested mailboxes
-        targetMailbox = findMailboxRecursive(
-          safeCall(() => accountMatches[0].mailboxes(), []),
-          mailboxName,
-          accountName,
-        );
-      }
+      const targetMailbox = findMailboxInAccount(accountMatches[0], mailboxName, accountName);
       if (!targetMailbox) {
         return JSON.stringify([]);
       }
@@ -1722,19 +1835,7 @@ async function listMessageMetadata(
         return JSON.stringify(emptyPage());
       }
 
-      let targetMailbox = null;
-      const directMatch = mailboxName.indexOf("/") < 0
-        ? safeCall(() => accountMatches[0].mailboxes.whose({ name: mailboxName })(), [])
-        : [];
-      if (Array.isArray(directMatch) && directMatch.length > 0) {
-        targetMailbox = directMatch[0];
-      } else {
-        targetMailbox = findMailboxRecursive(
-          safeCall(() => accountMatches[0].mailboxes(), []),
-          mailboxName,
-          accountName,
-        );
-      }
+      const targetMailbox = findMailboxInAccount(accountMatches[0], mailboxName, accountName);
       if (!targetMailbox) {
         return JSON.stringify(emptyPage());
       }
@@ -1916,15 +2017,7 @@ async function setMessageFlag(
       }
 
       const account = accountMatches[0];
-      let targetMailbox = null;
-      const directMatch = mailboxName.indexOf("/") < 0
-        ? safeCall(() => account.mailboxes.whose({ name: mailboxName })(), [])
-        : [];
-      if (Array.isArray(directMatch) && directMatch.length > 0) {
-        targetMailbox = directMatch[0];
-      } else {
-        targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
-      }
+      const targetMailbox = findMailboxInAccount(account, mailboxName, accountName);
 
       if (!targetMailbox) {
         throw new Error("Mailbox not found");
@@ -2013,15 +2106,7 @@ async function exportMessageArtifacts(
       }
 
       const account = accountMatches[0];
-      let targetMailbox = null;
-      const directMatch = mailboxName.indexOf("/") < 0
-        ? safeCall(() => account.mailboxes.whose({ name: mailboxName })(), [])
-        : [];
-      if (Array.isArray(directMatch) && directMatch.length > 0) {
-        targetMailbox = directMatch[0];
-      } else {
-        targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
-      }
+      const targetMailbox = findMailboxInAccount(account, mailboxName, accountName);
 
       if (!targetMailbox) {
         throw new Error("Mailbox not found");
@@ -2186,12 +2271,12 @@ async function moveMessage(
       }
 
       const account = accountMatches[0];
-      const sourceMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
+      const sourceMailbox = findMailboxInAccount(account, mailboxName, accountName);
       if (!sourceMailbox) {
         throw new Error("Source mailbox not found");
       }
 
-      const targetMailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetMailboxName, accountName);
+      const targetMailbox = findMailboxInAccount(account, targetMailboxName, accountName);
       if (!targetMailbox) {
         throw new Error("Target mailbox not found");
       }
@@ -2228,179 +2313,31 @@ async function moveMessage(
 }
 
 async function createMailbox(
-  accountName: string,
-  parentMailbox: string | null,
-  name: string,
+  _accountName: string,
+  _parentMailbox: string | null,
+  _name: string,
 ): Promise<string> {
-  try {
-    if (!(await checkMailAccess())) {
-      return "";
-    }
-
-    const escapedAccountName = escapeJXAString(accountName);
-    const escapedName = escapeJXAString(name);
-    const parentMailboxLiteral =
-      parentMailbox === null ? "null" : `"${escapeJXAString(parentMailbox)}"`;
-
-    const script = buildMailScript(`
-      const Mail = Application("Mail");
-      const accountName = "${escapedAccountName}";
-      const mailboxName = "${escapedName}";
-      const parentMailbox = ${parentMailboxLiteral};
-      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
-
-      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
-        throw new Error("Account not found");
-      }
-
-      let targetContainer = accountMatches[0];
-
-      if (parentMailbox !== null) {
-        const parent = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), parentMailbox, accountName);
-        if (!parent) {
-          throw new Error("Parent mailbox not found");
-        }
-        targetContainer = parent;
-      }
-
-      Mail.make({
-        new: "mailbox",
-        withProperties: { name: mailboxName },
-        at: targetContainer,
-      });
-
-      return JSON.stringify(true);
-    `);
-
-    await executeJXA<boolean>(script);
-    return `Created mailbox '${name}'`;
-  } catch (error) {
-    throw toMailError("Error creating mailbox", error);
-  }
+  throw new Error(UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE);
 }
 
-async function deleteMailbox(accountName: string, mailboxName: string): Promise<string> {
-  try {
-    if (!(await checkMailAccess())) {
-      return "";
-    }
-
-    const escapedAccountName = escapeJXAString(accountName);
-    const escapedMailboxName = escapeJXAString(mailboxName);
-    const script = buildMailScript(`
-      const Mail = Application("Mail");
-      const accountName = "${escapedAccountName}";
-      const mailboxName = "${escapedMailboxName}";
-      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
-
-      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
-        throw new Error("Account not found");
-      }
-
-      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName, accountName);
-      if (!mailbox) {
-        throw new Error("Mailbox not found");
-      }
-
-      Mail.delete(mailbox);
-      return JSON.stringify(true);
-    `);
-
-    await executeJXA<boolean>(script);
-    return `Deleted mailbox '${mailboxName}'`;
-  } catch (error) {
-    throw toMailError("Error deleting mailbox", error);
-  }
+async function deleteMailbox(_accountName: string, _mailboxName: string): Promise<string> {
+  throw new Error(UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE);
 }
 
 async function renameMailbox(
-  accountName: string,
-  mailboxName: string,
-  newName: string,
+  _accountName: string,
+  _mailboxName: string,
+  _newName: string,
 ): Promise<string> {
-  try {
-    if (!(await checkMailAccess())) {
-      return "";
-    }
-
-    const escapedAccountName = escapeJXAString(accountName);
-    const escapedMailboxName = escapeJXAString(mailboxName);
-    const escapedNewName = escapeJXAString(newName);
-    const script = buildMailScript(`
-      const Mail = Application("Mail");
-      const accountName = "${escapedAccountName}";
-      const mailboxName = "${escapedMailboxName}";
-      const newName = "${escapedNewName}";
-      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
-
-      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
-        throw new Error("Account not found");
-      }
-
-      const mailbox = findMailboxRecursive(safeCall(() => accountMatches[0].mailboxes(), []), mailboxName, accountName);
-      if (!mailbox) {
-        throw new Error("Mailbox not found");
-      }
-
-      mailbox.name = newName;
-      return JSON.stringify(true);
-    `);
-
-    await executeJXA<boolean>(script);
-    return `Renamed mailbox '${mailboxName}' to '${newName}'`;
-  } catch (error) {
-    throw toMailError("Error renaming mailbox", error);
-  }
+  throw new Error(UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE);
 }
 
 async function moveMailbox(
-  accountName: string,
-  mailboxName: string,
-  targetParent: string,
+  _accountName: string,
+  _mailboxName: string,
+  _targetParent: string,
 ): Promise<string> {
-  try {
-    if (!(await checkMailAccess())) {
-      return "";
-    }
-
-    const escapedAccountName = escapeJXAString(accountName);
-    const escapedMailboxName = escapeJXAString(mailboxName);
-    const escapedTargetParent = escapeJXAString(targetParent);
-    const script = buildMailScript(`
-      const Mail = Application("Mail");
-      const accountName = "${escapedAccountName}";
-      const mailboxName = "${escapedMailboxName}";
-      const targetParent = "${escapedTargetParent}";
-      const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
-
-      if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
-        throw new Error("Account not found");
-      }
-
-      const account = accountMatches[0];
-      const mailbox = findMailboxRecursive(safeCall(() => account.mailboxes(), []), mailboxName, accountName);
-      if (!mailbox) {
-        throw new Error("Mailbox not found");
-      }
-
-      const destination =
-        targetParent.length === 0
-          ? account
-          : findMailboxRecursive(safeCall(() => account.mailboxes(), []), targetParent, accountName);
-
-      if (!destination) {
-        throw new Error("Target mailbox not found");
-      }
-
-      Mail.move(mailbox, { to: destination });
-      return JSON.stringify(true);
-    `);
-
-    await executeJXA<boolean>(script);
-    return `Moved mailbox '${mailboxName}' to '${targetParent}'`;
-  } catch (error) {
-    throw toMailError("Error moving mailbox", error);
-  }
+  throw new Error(UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE);
 }
 
 const mail = {

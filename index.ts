@@ -12,6 +12,24 @@ interface WebSearchArgs {
   query: string;
 }
 
+const UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE =
+  "Unsupported: structural mailbox operations are not supported via Apple Mail Automation. Create, delete, rename, or move mailboxes manually in Apple Mail or use a robust server-side mail API. Moving messages with moveMessage to existing mailboxes remains supported.";
+
+const UNSUPPORTED_MAILBOX_STRUCTURE_OPERATIONS = [
+  "createMailbox",
+  "deleteMailbox",
+  "renameMailbox",
+  "moveMailbox",
+] as const;
+
+function isUnsupportedMailboxStructureOperation(
+  operation: string,
+): operation is (typeof UNSUPPORTED_MAILBOX_STRUCTURE_OPERATIONS)[number] {
+  return UNSUPPORTED_MAILBOX_STRUCTURE_OPERATIONS.includes(
+    operation as (typeof UNSUPPORTED_MAILBOX_STRUCTURE_OPERATIONS)[number],
+  );
+}
+
 // Safe mode implementation - lazy loading of modules
 let useEagerLoading = true;
 let loadingTimeout: NodeJS.Timeout | null = null;
@@ -250,7 +268,7 @@ function initServer() {
             }
 
             // Helper: format a ContactRecord into readable text
-            function formatContactRecord(contact: { id: string; firstName: string; lastName?: string; organization?: string; jobTitle?: string; department?: string; birthday?: string; note?: string; phones: Array<{ label: string; value: string }>; emails: Array<{ label: string; value: string }>; urls: Array<{ label: string; value: string }>; addresses: Array<{ label: string; street?: string; city?: string; zip?: string; state?: string; country?: string }> }): string {
+            function formatContactRecord(contact: { id: string; firstName: string; lastName?: string; organization?: string; jobTitle?: string; department?: string; birthday?: string; phones: Array<{ label: string; value: string }>; emails: Array<{ label: string; value: string }>; urls: Array<{ label: string; value: string }>; addresses: Array<{ label: string; street?: string; city?: string; zip?: string; state?: string; country?: string }> }): string {
               const parts: string[] = [];
               const fullName = contact.lastName ? `${contact.firstName} ${contact.lastName}` : contact.firstName;
               parts.push(`${fullName} (ID: ${contact.id})`);
@@ -279,7 +297,8 @@ function initServer() {
                   return `${a.label}: ${addrParts.join(", ")}`;
                 }).join("; ")}`);
               }
-              if (contact.note) parts.push(`Note: ${contact.note}`);
+              // contact.note intentionally not exposed — requires
+              // com.apple.developer.contacts.notes entitlement.
               return parts.join("\n");
             }
 
@@ -299,7 +318,6 @@ function initServer() {
                   jobTitle: args.jobTitle,
                   department: args.department,
                   birthday: args.birthday,
-                  note: args.note,
                   addresses: args.addresses ?? (args.address ? [{ label: "work", ...args.address }] : undefined),
                 });
 
@@ -338,7 +356,6 @@ function initServer() {
                   jobTitle: args.jobTitle,
                   department: args.department,
                   birthday: args.birthday,
-                  note: args.note,
                   addresses: args.addresses ?? (args.address ? [{ label: "work", ...args.address }] : undefined),
                 });
 
@@ -464,7 +481,7 @@ function initServer() {
                 if (!args.searchText) {
                   throw new Error("Search text is required for search operation");
                 }
-                
+
                 const foundNotes = await notesModule.findNote(args.searchText);
                 return {
                   content: [{
@@ -476,7 +493,7 @@ function initServer() {
                   isError: false
                 };
               }
-              
+
               case "list": {
                 const allNotes = await notesModule.getAllNotes();
                 return {
@@ -484,20 +501,20 @@ function initServer() {
                     type: "text",
                     text: allNotes.length ?
                       allNotes.map((note) => `${note.name}:\n${note.content}`)
-                      .join("\n\n") : 
+                      .join("\n\n") :
                       "No notes exist."
                   }],
                   isError: false
                 };
               }
-              
+
               case "create": {
                 if (!args.title || !args.body) {
                   throw new Error("Title and body are required for create operation");
                 }
-                
+
                 const result = await notesModule.createNote(args.title, args.body, args.folderName);
-                
+
                 return {
                   content: [{
                     type: "text",
@@ -508,7 +525,7 @@ function initServer() {
                   isError: !result.success
                 };
               }
-              
+
               default:
                 throw new Error(`Unknown operation: ${operation}`);
             }
@@ -632,6 +649,16 @@ function initServer() {
         case "mail": {
           if (!isMailArgs(args)) {
             throw new Error("Invalid arguments for mail tool");
+          }
+
+          if (isUnsupportedMailboxStructureOperation(args.operation)) {
+            return {
+              content: [{
+                type: "text",
+                text: UNSUPPORTED_MAILBOX_STRUCTURE_OPERATION_MESSAGE,
+              }],
+              isError: true,
+            };
           }
 
           try {
@@ -908,14 +935,19 @@ function initServer() {
               }
 
               case "mailboxTree": {
-                const tree = await mailModule.getAccountMailboxTree(args.account!);
+                const tree = await mailModule.getAccountMailboxTree(args.account!, {
+                  mailboxCounts: args.mailboxCounts,
+                  mailboxStructure: args.mailboxStructure,
+                  timeoutMs: args.timeoutMs,
+                });
                 const formatTree = (boxes: any[], indent = 0): string =>
                   boxes.map(b => {
                     const unread = b.directUnreadCount ?? b.unreadCount;
                     const total = b.directMessageCount ?? b.totalCount;
-                    const childCount = b.directChildCount ?? (Array.isArray(b.children) ? b.children.length : 0);
+                    const childCount = b.directChildCount ?? (Array.isArray(b.children) && b.children.length > 0 ? b.children.length : "?");
                     const label = b.path && b.path !== b.name ? `${b.name} [${b.path}]` : b.name;
-                    return `${" ".repeat(indent)}- ${label} (${unread}/${total}, children: ${childCount})\n${formatTree(b.children ?? [], indent + 2)}`;
+                    const countText = unread === null && total === null ? "counts: skipped" : `${unread ?? "?"}/${total ?? "?"}`;
+                    return `${" ".repeat(indent)}- ${label} (${countText}, children: ${childCount})\n${formatTree(b.children ?? [], indent + 2)}`;
                   }).join("");
                 return {
                   content: [{ type: "text", text: formatTree(tree).trim() }],
@@ -925,11 +957,17 @@ function initServer() {
               }
 
               case "mailboxProps": {
-                const info = await mailModule.getMailboxProperties(args.account!, args.mailbox!);
+                const info = await mailModule.getMailboxProperties(args.account!, args.mailbox!, {
+                  mailboxCounts: args.mailboxCounts,
+                  timeoutMs: args.timeoutMs,
+                });
                 if (!info) {
                   return { content: [{ type: "text", text: `Mailbox '${args.mailbox}' not found` }], isError: true };
                 }
-                const text = `${info.name}: ${info.unreadCount} unread of ${info.totalCount}`;
+                const countText = info.unreadCount === null && info.totalCount === null
+                  ? "counts skipped"
+                  : `${info.unreadCount ?? "?"} unread of ${info.totalCount ?? "?"}`;
+                const text = `${info.name}: ${countText}, children: ${info.directChildCount}`;
                 return { content: [{ type: "text", text }], mailbox: info, isError: false };
               }
 
@@ -1203,38 +1241,6 @@ function initServer() {
                   moveResult: result,
                   isError: false
                 };
-              }
-
-              case "createMailbox": {
-                const result = await mailModule.createMailbox(
-                  args.account!,
-                  args.parentMailbox ?? null,
-                  args.name!,
-                );
-                return { content: [{ type: "text", text: result }], isError: false };
-              }
-
-              case "deleteMailbox": {
-                const result = await mailModule.deleteMailbox(args.account!, args.mailbox!);
-                return { content: [{ type: "text", text: result }], isError: false };
-              }
-
-              case "renameMailbox": {
-                const result = await mailModule.renameMailbox(
-                  args.account!,
-                  args.mailbox!,
-                  args.newName!,
-                );
-                return { content: [{ type: "text", text: result }], isError: false };
-              }
-
-              case "moveMailbox": {
-                const result = await mailModule.moveMailbox(
-                  args.account!,
-                  args.mailbox!,
-                  args.targetParent!,
-                );
-                return { content: [{ type: "text", text: result }], isError: false };
               }
 
               default:
@@ -1784,7 +1790,6 @@ function isContactsArgs(args: unknown): args is {
   jobTitle?: string;
   department?: string;
   birthday?: string;
-  note?: string;
   url?: string;
   address?: {
     street?: string;
@@ -1812,7 +1817,7 @@ function isContactsArgs(args: unknown): args is {
     return false;
   }
 
-  const stringFields = ["name", "id", "firstName", "lastName", "email", "phone", "organization", "jobTitle", "department", "birthday", "note", "url"];
+  const stringFields = ["name", "id", "firstName", "lastName", "email", "phone", "organization", "jobTitle", "department", "birthday", "url"];
   for (const field of stringFields) {
     if (field in a && typeof a[field] !== "string") {
       return false;
@@ -1837,7 +1842,7 @@ function isContactsArgs(args: unknown): args is {
   return true;
 }
 
-function isNotesArgs(args: unknown): args is { 
+function isNotesArgs(args: unknown): args is {
   operation: "search" | "list" | "create";
   searchText?: string;
   title?: string;
@@ -1847,16 +1852,16 @@ function isNotesArgs(args: unknown): args is {
   if (typeof args !== "object" || args === null) {
     return false;
   }
-  
+
   const { operation } = args as { operation?: unknown };
   if (typeof operation !== "string") {
     return false;
   }
-  
+
   if (!["search", "list", "create"].includes(operation)) {
     return false;
   }
-  
+
   // Validate fields based on operation
   if (operation === "search") {
     const { searchText } = args as { searchText?: unknown };
@@ -1864,21 +1869,21 @@ function isNotesArgs(args: unknown): args is {
       return false;
     }
   }
-  
+
   if (operation === "create") {
     const { title, body } = args as { title?: unknown, body?: unknown };
-    if (typeof title !== "string" || title === "" || 
+    if (typeof title !== "string" || title === "" ||
         typeof body !== "string") {
       return false;
     }
-    
+
     // Check folderName if provided
     const { folderName } = args as { folderName?: unknown };
     if (folderName !== undefined && (typeof folderName !== "string" || folderName === "")) {
       return false;
     }
   }
-  
+
   return true;
 }
 
@@ -1974,6 +1979,9 @@ function isMailArgs(args: unknown): args is {
   includeAttachmentNames?: boolean;
   includeHeaders?: boolean;
   headerFilter?: string[];
+  mailboxCounts?: "none" | "unread" | "all";
+  mailboxStructure?: "flat" | "nested";
+  timeoutMs?: number;
   sort?: "dateSentAsc" | "dateSentDesc";
   cursor?: {
     dateSent: string;
@@ -2011,6 +2019,9 @@ function isMailArgs(args: unknown): args is {
     includeAttachmentNames,
     includeHeaders,
     headerFilter,
+    mailboxCounts,
+    mailboxStructure,
+    timeoutMs,
     sort,
     cursor,
   } = args as any;
@@ -2107,9 +2118,14 @@ function isMailArgs(args: unknown): args is {
       break;
     case "mailboxTree":
       if (!account || typeof account !== "string") return false;
+      if (mailboxCounts !== undefined && !["none", "unread", "all"].includes(mailboxCounts)) return false;
+      if (mailboxStructure !== undefined && !["flat", "nested"].includes(mailboxStructure)) return false;
+      if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs))) return false;
       break;
     case "mailboxProps":
       if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
+      if (mailboxCounts !== undefined && !["none", "unread", "all"].includes(mailboxCounts)) return false;
+      if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs))) return false;
       break;
     case "messages":
       if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
@@ -2135,17 +2151,11 @@ function isMailArgs(args: unknown): args is {
       ) return false;
       break;
     case "createMailbox":
-      if (!account || typeof account !== "string" || !name || typeof name !== "string") return false;
-      if (parentMailbox && typeof parentMailbox !== "string") return false;
-      break;
     case "deleteMailbox":
-      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string") return false;
-      break;
     case "renameMailbox":
-      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string" || !newName || typeof newName !== "string") return false;
-      break;
     case "moveMailbox":
-      if (!account || typeof account !== "string" || !mailbox || typeof mailbox !== "string" || !targetParent || typeof targetParent !== "string") return false;
+      // Legacy operation names are accepted so the handler can return a clear
+      // unsupported response instead of a generic argument validation error.
       break;
     case "unread":
     case "mailboxes":
@@ -2167,6 +2177,9 @@ function isMailArgs(args: unknown): args is {
   if (includeAttachments !== undefined && typeof includeAttachments !== "boolean") return false;
   if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") return false;
   if (headerFilter !== undefined && (!Array.isArray(headerFilter) || !headerFilter.every(h => typeof h === "string"))) return false;
+  if (mailboxCounts !== undefined && !["none", "unread", "all"].includes(mailboxCounts)) return false;
+  if (mailboxStructure !== undefined && !["flat", "nested"].includes(mailboxStructure)) return false;
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs))) return false;
   if (searchFields !== undefined && (!Array.isArray(searchFields) || !searchFields.every(field => ["subject", "sender", "attachmentNames"].includes(field)))) return false;
   if (mailObjectId !== undefined && typeof mailObjectId !== "string") return false;
   if (flagColor !== undefined && (typeof flagColor !== "string" || !["none", "red", "orange", "yellow", "green", "blue", "purple", "gray"].includes(flagColor))) return false;

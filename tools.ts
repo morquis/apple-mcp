@@ -11,7 +11,7 @@ const RUNTIME_INFO_TOOL: Tool = {
 
 const CONTACTS_TOOL: Tool = {
     name: "contacts",
-    description: "Search, create, update, and delete contacts in Apple Contacts. Search returns full contact details including ID for follow-up operations.",
+    description: "Search, create, update, and delete contacts in Apple Contacts. Search returns full contact details including ID for follow-up operations. Note: the `note` field is intentionally NOT supported. Reading or writing CNContact.note requires the Apple-restricted `com.apple.developer.contacts.notes` entitlement, which is granted only to signed/notarized .app bundles via Apple's manual review (see https://developer.apple.com/contact/request/contact-note-field). Without it, reads silently return an empty string and writes can crash the JXA host.",
     inputSchema: {
       type: "object",
       properties: {
@@ -46,7 +46,7 @@ const CONTACTS_TOOL: Tool = {
               items: {
                 type: "object",
                 properties: {
-                  label: { type: "string", description: "Label: work, home, mobile, iPhone, main, other" },
+                  label: { type: "string", description: "Label: work, home, mobile, iPhone, main, other, fax, workFax, homeFax, otherFax" },
                   value: { type: "string", description: "Phone number" }
                 },
                 required: ["label", "value"]
@@ -93,7 +93,6 @@ const CONTACTS_TOOL: Tool = {
         jobTitle: { type: "string", description: "Job title" },
         department: { type: "string", description: "Department" },
         birthday: { type: "string", description: "Birthday in ISO date format (YYYY-MM-DD)" },
-        note: { type: "string", description: "Notes" },
         addresses: {
           type: "array",
           items: {
@@ -139,7 +138,7 @@ const CONTACTS_TOOL: Tool = {
   };
   
   const NOTES_TOOL: Tool = {
-    name: "notes", 
+    name: "notes",
     description: "Search, retrieve and create notes in Apple Notes app",
     inputSchema: {
       type: "object",
@@ -212,7 +211,7 @@ const CONTACTS_TOOL: Tool = {
   
   const MAIL_TOOL: Tool = {
     name: "mail",
-    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, export selected message artifacts, move selected messages, and send emails. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', and 'moveMessage', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
+    description: "Interact with Apple Mail app - read unread emails, search emails, set message flags, export selected message artifacts, move selected messages to existing mailboxes, send emails, and inspect mailbox structure. When retrieving messages, clickable message links are automatically generated in the format [Subject](message:%3CMessage-ID%3E). PERFORMANCE: For 'unread', 'messages', 'messageMetadata', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', and 'moveMessage', always specify 'account' and 'mailbox' to avoid scanning all mailboxes across all accounts — this is critical for IMAP/Exchange accounts with hundreds of mailboxes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -357,6 +356,20 @@ const CONTACTS_TOOL: Tool = {
             type: "string"
           },
           description: "Specific header names to include (e.g., ['Message-ID', 'In-Reply-To', 'References']). Only used when includeHeaders is true. If not provided, all headers are included."
+        },
+        mailboxCounts: {
+          type: "string",
+          enum: ["none", "unread", "all"],
+          description: "For mailboxTree/mailboxProps: include no message counts, unread counts only, or unread plus direct message counts. Defaults to none to avoid expensive scans on large accounts."
+        },
+        mailboxStructure: {
+          type: "string",
+          enum: ["flat", "nested"],
+          description: "For mailboxTree: flat returns a fast structured mailbox list without parent/child reconstruction; nested reconstructs hierarchy and can be slow on large Exchange/M365 accounts. Defaults to flat."
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Optional JXA execution timeout in milliseconds for mailboxTree/mailboxProps. Values are capped between 1000 and 300000."
         }
       },
       required: ["operation"]

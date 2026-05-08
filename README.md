@@ -66,7 +66,7 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Display mailbox hierarchy and properties
   - List messages from a specific mailbox with filters
   - Retrieve attachments and full message headers when listing messages
-  - Create, delete, rename and move mailboxes
+  - Move messages into existing mailboxes
 - Reminders:
   - List all reminders and reminder lists
   - Search for reminders by text
@@ -134,9 +134,9 @@ find all the notes related to AI and send it to my girlfriend
 create a reminder to "Buy groceries" for tomorrow at 5pm
 ```
 
-```
-create a mailbox "Project" under "Work" account and then move it into "Archive"
-```
+Structural mailbox changes such as creating, deleting, renaming, or moving
+folders are intentionally not exposed through Apple Mail Automation. Create or
+manage folders manually in Mail or through a robust server-side mail API.
 
 ## Local Development
 
@@ -148,5 +148,29 @@ bun run lint
 bun test
 bun run index.ts
 ```
+
+Use `bun run index.ts` for development. For a stable local MCP runtime, build the
+TypeScript output and run the compiled Node entry point:
+
+```bash
+bun run build
+node dist/index.js
+```
+
+Local MCP clients should point at `dist/index.js` for the stable runtime:
+
+```json
+{
+  "mcpServers": {
+    "apple-mcp": {
+      "command": "/opt/homebrew/bin/node",
+      "args": ["/path/to/apple-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Do not use or recreate `build/index.js`; it was a stale local bundle that started
+but failed Apple Mail account retrieval.
 
 enjoy!

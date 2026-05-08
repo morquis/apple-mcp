@@ -22,10 +22,6 @@ const MAIL_DISPATCH_OPERATIONS = [
   "mailboxProps",
   "messages",
   "messageMetadata",
-  "createMailbox",
-  "deleteMailbox",
-  "renameMailbox",
-  "moveMailbox",
 ];
 
 interface PackageInfo {

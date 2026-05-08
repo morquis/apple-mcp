@@ -227,9 +227,37 @@ describe("mail", () => {
 
     expect(result).toEqual(tree);
     const script = String(executeJXASpy.mock.calls[2]?.[0]);
-    expect(script).toContain("buildMailboxTree(mailboxes, accountName)");
+    expect(script).toContain('const mailboxCounts = "none"');
+    expect(script).toContain('const mailboxStructure = "flat"');
+    expect(script).toContain("buildFlatMailboxList(mailboxes, countOptions)");
     expect(script).toContain("currentMailbox.container()");
     expect(script).toContain('const accountName = "Work"');
+  });
+
+  it("getAccountMailboxTree can request nested message counts and timeout", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce(true as never)
+      .mockResolvedValueOnce([] as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const mailModule = await importMail();
+    const result = await mailModule.getAccountMailboxTree("Work", {
+      mailboxCounts: "all",
+      mailboxStructure: "nested",
+      timeoutMs: 120_000,
+    });
+
+    expect(result).toEqual([]);
+    const script = String(executeJXASpy.mock.calls[2]?.[0]);
+    expect(script).toContain('const mailboxCounts = "all"');
+    expect(script).toContain('const mailboxStructure = "nested"');
+    expect(script).toContain("buildMailboxTree(mailboxes, accountName, countOptions)");
+    expect(script).toContain("includeMessageCounts: mailboxCounts === \"all\"");
+    expect(executeJXASpy.mock.calls[2]?.[1]).toEqual({ timeout: 120_000 });
   });
 
   it("listMessageMetadata uses mailbox paths and omits message content", async () => {
@@ -569,9 +597,22 @@ describe("mail", () => {
     expect(script).toContain('const mailObjectId = "message-b"');
     expect(script).toContain('const targetMailboxName = "Archive/Invoices"');
     expect(script).toContain("const dryRun = true");
+    expect(script).toContain("findMailboxInAccount(account, mailboxName, accountName)");
+    expect(script).toContain("findMailboxInAccount(account, targetMailboxName, accountName)");
     expect(script).toContain("findMessageByObjectId(sourceMailbox, mailObjectId)");
     expect(script).toContain("if (!dryRun) {");
     expect(script).toContain("Mail.move(message, { to: targetMailbox })");
     expect(script).not.toContain("Mail.messages()");
+  });
+
+  it("structural mailbox operations return unsupported without running JXA", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    const mailModule = await importMail();
+
+    await expect(mailModule.createMailbox("Work", "Archive", "Invoices")).rejects.toThrow("structural mailbox operations are not supported via Apple Mail Automation");
+    await expect(mailModule.deleteMailbox("Work", "Archive/Invoices")).rejects.toThrow("Create, delete, rename, or move mailboxes manually");
+    await expect(mailModule.renameMailbox("Work", "Archive/Invoices", "Bills")).rejects.toThrow("robust server-side mail API");
+    await expect(mailModule.moveMailbox("Work", "Archive/Invoices", "Archive")).rejects.toThrow("moveMessage to existing mailboxes remains supported");
+    expect(executeJXASpy).not.toHaveBeenCalled();
   });
 });

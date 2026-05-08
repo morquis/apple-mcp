@@ -25,7 +25,11 @@ export type ContactRecord = {
   jobTitle?: string;
   department?: string;
   birthday?: string;
-  note?: string;
+  // Note: the `note` field is intentionally not part of the public type.
+  // Reading/writing CNContact.note requires the Apple-restricted
+  // `com.apple.developer.contacts.notes` entitlement (granted only to
+  // signed/notarized .app bundles), which is unavailable to MCP-hosted
+  // JXA scripts. See https://developer.apple.com/contact/request/contact-note-field
   phones: ContactField[];
   emails: ContactField[];
   urls: ContactField[];
@@ -49,7 +53,7 @@ export type CreateContactParams = {
   jobTitle?: string;
   department?: string;
   birthday?: string;
-  note?: string;
+  // `note` intentionally omitted — see ContactRecord comment.
   addresses?: Array<{
     label?: string;
     street?: string;
@@ -71,7 +75,7 @@ export type UpdateContactParams = {
   jobTitle?: string;
   department?: string;
   birthday?: string;
-  note?: string;
+  // `note` intentionally omitted — see ContactRecord comment.
   addresses?: Array<{
     label?: string;
     street?: string;
@@ -114,6 +118,7 @@ async function checkContactsAccess(): Promise<boolean> {
 function buildReadContactJXA(personVarName: string): string {
   return `(function() {
     var p = ${personVarName};
+    var _lblXlat = ${buildSentinelLookupJXA()};
     var record = { id: "", firstName: "", phones: [], emails: [], urls: [], addresses: [] };
     try { record.id = String(p.id()); } catch(e) {}
     try { record.firstName = String(p.firstName()); } catch(e) {}
@@ -121,7 +126,7 @@ function buildReadContactJXA(personVarName: string): string {
     try { var org = p.organization(); if (org) record.organization = String(org); } catch(e) {}
     try { var jt = p.jobTitle(); if (jt) record.jobTitle = String(jt); } catch(e) {}
     try { var dep = p.department(); if (dep) record.department = String(dep); } catch(e) {}
-    try { var nt = p.note(); if (nt) record.note = String(nt); } catch(e) {}
+    // CNContact.note intentionally not read — see ContactRecord type comment.
     try {
       var bd = p.birthDate();
       if (bd) {
@@ -134,19 +139,19 @@ function buildReadContactJXA(personVarName: string): string {
     try {
       var phs = p.phones();
       for (var ph = 0; ph < phs.length; ph++) {
-        try { record.phones.push({ label: String(phs[ph].label()), value: String(phs[ph].value()) }); } catch(e) {}
+        try { record.phones.push({ label: _lblXlat(String(phs[ph].label())), value: String(phs[ph].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
       var ems = p.emails();
       for (var em = 0; em < ems.length; em++) {
-        try { record.emails.push({ label: String(ems[em].label()), value: String(ems[em].value()) }); } catch(e) {}
+        try { record.emails.push({ label: _lblXlat(String(ems[em].label())), value: String(ems[em].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
       var us = p.urls();
       for (var ur = 0; ur < us.length; ur++) {
-        try { record.urls.push({ label: String(us[ur].label()), value: String(us[ur].value()) }); } catch(e) {}
+        try { record.urls.push({ label: _lblXlat(String(us[ur].label())), value: String(us[ur].value()) }); } catch(e) {}
       }
     } catch(e) {}
     try {
@@ -154,7 +159,7 @@ function buildReadContactJXA(personVarName: string): string {
       for (var ad = 0; ad < addrs.length; ad++) {
         try {
           var a = {};
-          a.label = String(addrs[ad].label());
+          a.label = _lblXlat(String(addrs[ad].label()));
           try { var v = addrs[ad].street(); if (v) a.street = String(v); } catch(e2) {}
           try { var v = addrs[ad].city(); if (v) a.city = String(v); } catch(e2) {}
           try { var v = addrs[ad].zip(); if (v) a.zip = String(v); } catch(e2) {}
@@ -318,17 +323,92 @@ async function findContactByPhone(phoneNumber: string): Promise<string | null> {
 // ---------- CNContact label mapping ----------
 // The Scripting Bridge silently drops phones on write (macOS bug).
 // We use the CNContacts ObjC framework for all writes and the Scripting Bridge for reads.
+//
+// Apple uses sentinel strings of the form `_$!<...>!$_` for the well-known
+// CNLabel* constants (CNLabelWork, CNLabelPhoneNumberMobile,
+// CNLabelPhoneNumberWorkFax, etc.). When MCP clients pass user-facing labels
+// like "work" or "workFax", we translate to the sentinel for writes; on reads
+// we translate back so clients never see the raw sentinel.
+
+const USER_LABEL_TO_SENTINEL: Record<string, string> = {
+  work: "_$!<Work>!$_",
+  home: "_$!<Home>!$_",
+  other: "_$!<Other>!$_",
+  mobile: "_$!<Mobile>!$_",
+  main: "_$!<Main>!$_",
+  iphone: "_$!<Mobile>!$_",
+  // Fax labels (CNLabelPhoneNumberWorkFax / HomeFax / OtherFax). Apple has no
+  // unqualified "fax" sentinel — we alias bare "fax" to WorkFax because that
+  // is by far the most common usage; clients that need home/other fax can
+  // pass the qualified label.
+  //
+  // NOTE: Apple's Scripting Bridge expects the ABPerson-legacy uppercase FAX
+  // form (`_$!<WorkFAX>!$_`), not the CN-API form `_$!<WorkFax>!$_`.
+  // Empirically verified 2026-05-08: writing the CN form silently falls back
+  // to `_$!<EX-AssistantPhone>!$_` (the Assistant label!), while reading a
+  // fax that was set manually in Contacts.app returns the uppercase FAX form.
+  workfax: "_$!<WorkFAX>!$_",
+  homefax: "_$!<HomeFAX>!$_",
+  otherfax: "_$!<OtherFAX>!$_",
+  fax: "_$!<WorkFAX>!$_",
+};
+
+// Inverse map: sentinel → canonical user-facing label. Built once from the
+// forward map so both directions stay in sync. We pick a canonical user label
+// for each sentinel rather than reverse-mapping every alias (e.g. sentinel
+// `_$!<Mobile>!$_` resolves to "mobile", not "iphone"; bare "fax" never
+// appears on reads because we always emit "workFax" for `_$!<WorkFAX>!$_`).
+//
+// We accept BOTH sentinel forms for fax on the read path:
+//   - `_$!<WorkFAX>!$_` (uppercase FAX, ABPerson-legacy form Apple actually
+//     stores when a user adds a fax in Contacts.app — this is the canonical
+//     form going forward)
+//   - `_$!<WorkFax>!$_` (camelCase, the CN-API form documented by Apple but
+//     not honored by the Scripting Bridge — kept defensively so any contacts
+//     written by older builds of this MCP or by other CN-API clients still
+//     read back as "workFax" instead of leaking the raw sentinel).
+const SENTINEL_TO_USER_LABEL: Record<string, string> = {
+  "_$!<Work>!$_": "work",
+  "_$!<Home>!$_": "home",
+  "_$!<Other>!$_": "other",
+  "_$!<Mobile>!$_": "mobile",
+  "_$!<Main>!$_": "main",
+  "_$!<WorkFAX>!$_": "workFax",
+  "_$!<HomeFAX>!$_": "homeFax",
+  "_$!<OtherFAX>!$_": "otherFax",
+  // Defensive: legacy CN-API form, in case any data was written with it.
+  "_$!<WorkFax>!$_": "workFax",
+  "_$!<HomeFax>!$_": "homeFax",
+  "_$!<OtherFax>!$_": "otherFax",
+};
 
 function cnLabelForUserLabel(label: string): string {
-  const map: Record<string, string> = {
-    work: "_$!<Work>!$_",
-    home: "_$!<Home>!$_",
-    other: "_$!<Other>!$_",
-    mobile: "_$!<Mobile>!$_",
-    main: "_$!<Main>!$_",
-    iphone: "_$!<Mobile>!$_",
-  };
-  return map[label.toLowerCase()] ?? "_$!<Work>!$_";
+  return USER_LABEL_TO_SENTINEL[label.toLowerCase()] ?? "_$!<Work>!$_";
+}
+
+/**
+ * Translates an Apple CNLabel sentinel (e.g. `_$!<WorkFax>!$_`) back to the
+ * canonical user-facing label (`"workFax"`). Unknown labels (custom user
+ * labels, unmapped sentinels) are returned unchanged so the client at least
+ * sees what Apple delivered instead of a misleading default like "work".
+ */
+export function userLabelForCNLabel(sentinel: string): string {
+  if (!sentinel) return sentinel;
+  return SENTINEL_TO_USER_LABEL[sentinel] ?? sentinel;
+}
+
+/**
+ * Returns a JXA expression that, given a JXA local variable name holding a
+ * sentinel string, evaluates to the canonical user-facing label. This must
+ * stay in sync with SENTINEL_TO_USER_LABEL — it is embedded into the
+ * read-path scripts so the client receives "workFax" instead of
+ * "_$!<WorkFax>!$_".
+ */
+function buildSentinelLookupJXA(): string {
+  const entries = Object.entries(SENTINEL_TO_USER_LABEL)
+    .map(([sentinel, user]) => `${JSON.stringify(sentinel)}: ${JSON.stringify(user)}`)
+    .join(", ");
+  return `(function(_lbl) { var _m = {${entries}}; return (_lbl && _m[_lbl]) ? _m[_lbl] : _lbl; })`;
 }
 
 function buildCNLabeledValues(
@@ -337,21 +417,31 @@ function buildCNLabeledValues(
 ): string {
   // wrapValue: JXA expression wrapping the value, e.g. "$.CNPhoneNumber.phoneNumberWithStringValue($(\"{v}\"))"
   // or just "$(\"{v}\")" for emails/urls
+  //
+  // IMPORTANT: We must NOT pass an array of CNLabeledValue objects to
+  // $.NSArray.arrayWithArray([...]). JXA serializes ObjC objects that
+  // travel through a JS array literal into __NSDictionaryM, which then
+  // fails CNContact's type check with:
+  //   "Labeled value {} has incorrect type __NSDictionaryM for key
+  //    phoneNumbers. It should be CNLabeledValue."
+  // Build an NSMutableArray and use addObject() instead — the bridge
+  // keeps the CNLabeledValue identity intact on that path.
   if (items.length === 0) return "$.NSArray.array";
-  const elements = items.map(item => {
+  const adds = items.map(item => {
     const escapedLabel = escapeJXAString(cnLabelForUserLabel(item.label));
     const escapedValue = escapeJXAString(item.value);
     const valueExpr = wrapValue.replace("{v}", escapedValue);
-    return `$.CNLabeledValue.alloc.initWithLabelValue($("${escapedLabel}"), ${valueExpr})`;
+    return `_lv.addObject($.CNLabeledValue.labeledValueWithLabelValue($("${escapedLabel}"), ${valueExpr}));`;
   });
-  return `$.NSArray.arrayWithArray([${elements.join(", ")}])`;
+  return `(function() { var _lv = $.NSMutableArray.alloc.init; ${adds.join(" ")} return _lv; })()`;
 }
 
 function buildCNAddresses(
   addresses: Array<{ label?: string; street?: string; city?: string; zip?: string; state?: string; country?: string }>,
 ): string {
+  // Same constraint as buildCNLabeledValues — see comment there.
   if (addresses.length === 0) return "$.NSArray.array";
-  const elements = addresses.map(a => {
+  const adds = addresses.map(a => {
     const label = escapeJXAString(cnLabelForUserLabel(a.label || "work"));
     const lines: string[] = [];
     lines.push("var _a = $.CNMutablePostalAddress.alloc.init;");
@@ -360,9 +450,9 @@ function buildCNAddresses(
     if (a.zip) lines.push(`_a.postalCode = $("${escapeJXAString(a.zip)}");`);
     if (a.state) lines.push(`_a.state = $("${escapeJXAString(a.state)}");`);
     if (a.country) lines.push(`_a.country = $("${escapeJXAString(a.country)}");`);
-    return `(function() { ${lines.join(" ")} return $.CNLabeledValue.alloc.initWithLabelValue($("${label}"), _a); })()`;
+    return `(function() { ${lines.join(" ")} _lv.addObject($.CNLabeledValue.labeledValueWithLabelValue($("${label}"), _a)); })();`;
   });
-  return `$.NSArray.arrayWithArray([${elements.join(", ")}])`;
+  return `(function() { var _lv = $.NSMutableArray.alloc.init; ${adds.join(" ")} return _lv; })()`;
 }
 
 // ---------- CRUD functions ----------
@@ -400,7 +490,6 @@ async function createContact(params: CreateContactParams): Promise<ContactResult
     const escapedOrg = params.organization ? escapeJXAString(params.organization) : null;
     const escapedJobTitle = params.jobTitle ? escapeJXAString(params.jobTitle) : null;
     const escapedDept = params.department ? escapeJXAString(params.department) : null;
-    const escapedNote = params.note ? escapeJXAString(params.note) : null;
 
     const phonesExpr = buildCNLabeledValues(phones, '$.CNPhoneNumber.phoneNumberWithStringValue($("{v}"))');
     const emailsExpr = buildCNLabeledValues(emails, '$("{v}")');
@@ -436,7 +525,10 @@ async function createContact(params: CreateContactParams): Promise<ContactResult
       ${escapedOrg !== null ? `contact.organizationName = $("${escapedOrg}");` : ""}
       ${escapedJobTitle !== null ? `contact.jobTitle = $("${escapedJobTitle}");` : ""}
       ${escapedDept !== null ? `contact.departmentName = $("${escapedDept}");` : ""}
-      ${escapedNote !== null ? `contact.note = $("${escapedNote}");` : ""}
+      // CNContact.note intentionally NOT set — requires the Apple-restricted
+      // com.apple.developer.contacts.notes entitlement (granted only to
+      // signed/notarized .app bundles). Setting it from an MCP-hosted JXA
+      // script previously triggered SIGSEGV in osascript on save.
 
       contact.phoneNumbers = ${phonesExpr};
       contact.emailAddresses = ${emailsExpr};
@@ -504,7 +596,7 @@ async function updateContact(params: UpdateContactParams): Promise<ContactResult
     if (params.organization !== undefined) setProps.push(`mc.organizationName = $("${escapeJXAString(params.organization)}");`);
     if (params.jobTitle !== undefined) setProps.push(`mc.jobTitle = $("${escapeJXAString(params.jobTitle)}");`);
     if (params.department !== undefined) setProps.push(`mc.departmentName = $("${escapeJXAString(params.department)}");`);
-    if (params.note !== undefined) setProps.push(`mc.note = $("${escapeJXAString(params.note)}");`);
+    // CNContact.note intentionally NOT writable — see createContact comment.
 
     let birthdayCode = "";
     if (params.birthday !== undefined) {
@@ -548,19 +640,35 @@ async function updateContact(params: UpdateContactParams): Promise<ContactResult
       var store = $.CNContactStore.alloc.init;
       var error = Ref();
 
-      // Find the contact by its Scripting Bridge ID
-      // The SB ID has the format "UUID:ABPerson" — the CNContact identifier is just the UUID part
+      // The CNContact .identifier returns the FULL string "UUID:ABPerson"
+      // (verified empirically: matching by name via
+      // CNContact.predicateForContactsMatchingName and reading
+      // contact.identifier yields e.g. "AAAF...:ABPerson"). Stripping
+      // ":ABPerson" produces a CN identifier that no record has, and the
+      // predicate fetch silently returns 0 matches. Pass the SB ID through
+      // unchanged.
       var sbId = "${escapedId}";
-      var cnId = sbId.indexOf(":") !== -1 ? sbId.split(":")[0] : sbId;
+      var cnId = sbId;
 
-      var keys = $.NSArray.arrayWithArray([
-        $.CNContactGivenNameKey, $.CNContactFamilyNameKey,
-        $.CNContactOrganizationNameKey, $.CNContactJobTitleKey,
-        $.CNContactDepartmentNameKey, $.CNContactNoteKey,
-        $.CNContactPhoneNumbersKey, $.CNContactEmailAddressesKey,
-        $.CNContactUrlAddressesKey, $.CNContactPostalAddressesKey,
-        $.CNContactBirthdayKey, $.CNContactIdentifierKey
-      ]);
+      // Build the keys array via NSMutableArray.addObject — see the comment
+      // on buildCNLabeledValues. JS-array literals fed into
+      // $.NSArray.arrayWithArray([...]) are coerced to __NSDictionaryM,
+      // which silently breaks the predicate fetch (and can cause an empty
+      // result that masks the real failure).
+      var keys = $.NSMutableArray.alloc.init;
+      keys.addObject($.CNContactGivenNameKey);
+      keys.addObject($.CNContactFamilyNameKey);
+      keys.addObject($.CNContactOrganizationNameKey);
+      keys.addObject($.CNContactJobTitleKey);
+      keys.addObject($.CNContactDepartmentNameKey);
+      // CNContactNoteKey intentionally NOT requested — requires
+      // com.apple.developer.contacts.notes entitlement.
+      keys.addObject($.CNContactPhoneNumbersKey);
+      keys.addObject($.CNContactEmailAddressesKey);
+      keys.addObject($.CNContactUrlAddressesKey);
+      keys.addObject($.CNContactPostalAddressesKey);
+      keys.addObject($.CNContactBirthdayKey);
+      keys.addObject($.CNContactIdentifierKey);
 
       var predicate = $.CNContact.predicateForContactsWithIdentifiers($.NSArray.arrayWithObject($(cnId)));
       var contacts = store.unifiedContactsMatchingPredicateKeysToFetchError(predicate, keys, error);
@@ -625,8 +733,11 @@ async function deleteContact(id: string): Promise<{ success: boolean; error?: st
       var store = $.CNContactStore.alloc.init;
       var error = Ref();
 
+      // The CNContact .identifier IS the full "UUID:ABPerson" string —
+      // see updateContact for empirical verification. Do NOT strip the
+      // suffix; the predicate fetch returns 0 matches if you do.
       var sbId = "${escapedId}";
-      var cnId = sbId.indexOf(":") !== -1 ? sbId.split(":")[0] : sbId;
+      var cnId = sbId;
 
       var keys = $.NSArray.arrayWithObject($.CNContactIdentifierKey);
       var predicate = $.CNContact.predicateForContactsWithIdentifiers($.NSArray.arrayWithObject($(cnId)));
