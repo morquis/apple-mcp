@@ -51,8 +51,10 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - Send messages using the Apple Messages app
   - Read out messages
 - Notes:
-  - List notes
-  - Search & read notes in Apple Notes app
+  - List notes (optionally scoped by account and folder)
+  - Search & read notes in Apple Notes app (optionally scoped)
+  - Create notes in a specific folder, optionally targeting an account
+  - List Apple Notes accounts and folders
 - Contacts:
   - Search contacts for sending messages
 - Emails:

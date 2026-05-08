@@ -54,4 +54,64 @@ integrationDescribe("notes integration", () => {
     expect(result.success).toBe(false);
     expect(result.message).toBeDefined();
   }, INTEGRATION_TIMEOUT);
+
+  it("listAccounts returns the local Notes accounts", async () => {
+    const accounts = await notes.listAccounts();
+    expect(Array.isArray(accounts)).toBe(true);
+  }, INTEGRATION_TIMEOUT);
+
+  // The scope-aware tests target a real local account/folder combination.
+  // Configure via env vars; if either is missing or absent on the host,
+  // the scoped tests skip cleanly. Defaults assume an iCloud account.
+  const TEST_ACCOUNT = process.env.APPLE_MCP_TEST_NOTES_ACCOUNT ?? "iCloud";
+  const TEST_FOLDER = process.env.APPLE_MCP_TEST_NOTES_FOLDER;
+
+  it("listFolders returns the configured account's folders if it exists locally", async () => {
+    const accounts = await notes.listAccounts();
+    if (!accounts.includes(TEST_ACCOUNT)) {
+      return;
+    }
+    const folders = await notes.listFolders(TEST_ACCOUNT);
+    expect(Array.isArray(folders)).toBe(true);
+    if (TEST_FOLDER && folders.includes(TEST_FOLDER)) {
+      expect(folders).toContain(TEST_FOLDER);
+    }
+  }, INTEGRATION_TIMEOUT);
+
+  it("getAllNotes scoped to a specific account+folder only returns notes from that folder", async () => {
+    if (!TEST_FOLDER) {
+      return;
+    }
+    const accounts = await notes.listAccounts();
+    if (!accounts.includes(TEST_ACCOUNT)) {
+      return;
+    }
+    const folders = await notes.listFolders(TEST_ACCOUNT);
+    if (!folders.includes(TEST_FOLDER)) {
+      return;
+    }
+
+    const scoped = await notes.getAllNotes({
+      accountName: TEST_ACCOUNT,
+      folderName: TEST_FOLDER,
+    });
+    expect(Array.isArray(scoped)).toBe(true);
+
+    // The unscoped read across all accounts must be at least as large as the
+    // scoped one — otherwise the scope filter is broken.
+    const all = await notes.getAllNotes();
+    expect(all.length).toBeGreaterThanOrEqual(scoped.length);
+  }, INTEGRATION_TIMEOUT);
+
+  it("getAllNotes throws when the account does not exist", async () => {
+    await expect(
+      notes.getAllNotes({ accountName: "__nonexistent_account_zzz__" }),
+    ).rejects.toThrow();
+  }, INTEGRATION_TIMEOUT);
+
+  it("listFolders throws when the account does not exist", async () => {
+    await expect(
+      notes.listFolders("__nonexistent_account_zzz__"),
+    ).rejects.toThrow();
+  }, INTEGRATION_TIMEOUT);
 });

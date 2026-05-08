@@ -476,33 +476,46 @@ function initServer() {
             const notesModule = await loadModule('notes');
             const { operation } = args;
             
+            const scope = {
+              accountName: args.accountName,
+              folderName: args.folderName,
+            };
+            const scopeSuffix =
+              scope.accountName && scope.folderName
+                ? ` in ${scope.accountName}/${scope.folderName}`
+                : scope.accountName
+                  ? ` in account "${scope.accountName}"`
+                  : scope.folderName
+                    ? ` in folder "${scope.folderName}"`
+                    : "";
+
             switch (operation) {
               case "search": {
                 if (!args.searchText) {
                   throw new Error("Search text is required for search operation");
                 }
 
-                const foundNotes = await notesModule.findNote(args.searchText);
+                const foundNotes = await notesModule.findNote(args.searchText, scope);
                 return {
                   content: [{
                     type: "text",
                     text: foundNotes.length ?
                       foundNotes.map(note => `${note.name}:\n${note.content}`).join("\n\n") :
-                      `No notes found for "${args.searchText}"`
+                      `No notes found for "${args.searchText}"${scopeSuffix}`
                   }],
                   isError: false
                 };
               }
 
               case "list": {
-                const allNotes = await notesModule.getAllNotes();
+                const allNotes = await notesModule.getAllNotes(scope);
                 return {
                   content: [{
                     type: "text",
                     text: allNotes.length ?
                       allNotes.map((note) => `${note.name}:\n${note.content}`)
                       .join("\n\n") :
-                      "No notes exist."
+                      `No notes found${scopeSuffix}.`
                   }],
                   isError: false
                 };
@@ -513,16 +526,45 @@ function initServer() {
                   throw new Error("Title and body are required for create operation");
                 }
 
-                const result = await notesModule.createNote(args.title, args.body, args.folderName);
+                const result = await notesModule.createNote(
+                  args.title,
+                  args.body,
+                  args.folderName,
+                  args.accountName,
+                );
 
+                const accountSuffix = result.accountName ? ` (${result.accountName})` : "";
                 return {
                   content: [{
                     type: "text",
                     text: result.success ?
-                      `Created note "${args.title}" in folder "${result.folderName}"${result.usedDefaultFolder ? ' (created new folder)' : ''}.` :
+                      `Created note "${args.title}" in folder "${result.folderName}"${accountSuffix}${result.usedDefaultFolder ? ' (created new folder)' : ''}.` :
                       `Failed to create note: ${result.message}`
                   }],
                   isError: !result.success
+                };
+              }
+
+              case "accounts": {
+                const accounts = await notesModule.listAccounts();
+                return {
+                  content: [{
+                    type: "text",
+                    text: accounts.length ? accounts.join("\n") : "No Apple Notes accounts found.",
+                  }],
+                  isError: false,
+                };
+              }
+
+              case "folders": {
+                const folders = await notesModule.listFolders(args.accountName);
+                const where = args.accountName ? ` in account "${args.accountName}"` : "";
+                return {
+                  content: [{
+                    type: "text",
+                    text: folders.length ? folders.join("\n") : `No folders found${where}.`,
+                  }],
+                  isError: false,
                 };
               }
 
@@ -1843,11 +1885,12 @@ function isContactsArgs(args: unknown): args is {
 }
 
 function isNotesArgs(args: unknown): args is {
-  operation: "search" | "list" | "create";
+  operation: "search" | "list" | "create" | "accounts" | "folders";
   searchText?: string;
   title?: string;
   body?: string;
   folderName?: string;
+  accountName?: string;
 } {
   if (typeof args !== "object" || args === null) {
     return false;
@@ -1858,7 +1901,7 @@ function isNotesArgs(args: unknown): args is {
     return false;
   }
 
-  if (!["search", "list", "create"].includes(operation)) {
+  if (!["search", "list", "create", "accounts", "folders"].includes(operation)) {
     return false;
   }
 
@@ -1876,12 +1919,18 @@ function isNotesArgs(args: unknown): args is {
         typeof body !== "string") {
       return false;
     }
+  }
 
-    // Check folderName if provided
-    const { folderName } = args as { folderName?: unknown };
-    if (folderName !== undefined && (typeof folderName !== "string" || folderName === "")) {
-      return false;
-    }
+  // Validate optional scope fields uniformly across all operations.
+  const { folderName, accountName } = args as {
+    folderName?: unknown;
+    accountName?: unknown;
+  };
+  if (folderName !== undefined && (typeof folderName !== "string" || folderName === "")) {
+    return false;
+  }
+  if (accountName !== undefined && (typeof accountName !== "string" || accountName === "")) {
+    return false;
   }
 
   return true;

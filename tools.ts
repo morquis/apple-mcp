@@ -139,14 +139,14 @@ const CONTACTS_TOOL: Tool = {
   
   const NOTES_TOOL: Tool = {
     name: "notes",
-    description: "Search, retrieve and create notes in Apple Notes app",
+    description: "Search, retrieve and create notes in Apple Notes. Supports scoping by 'accountName' and 'folderName' for 'list', 'search' and 'create'. Without scope, list/search read across all accounts. Use 'accounts' to list Apple Notes accounts and 'folders' to list folders (optionally for one account).",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'search', 'list', or 'create'",
-          enum: ["search", "list", "create"]
+          description: "Operation to perform: 'search', 'list', 'create', 'accounts', or 'folders'",
+          enum: ["search", "list", "create", "accounts", "folders"]
         },
         searchText: {
           type: "string",
@@ -162,7 +162,11 @@ const CONTACTS_TOOL: Tool = {
         },
         folderName: {
           type: "string",
-          description: "Name of the folder to create the note in (optional for create operation, defaults to 'Claude')"
+          description: "Apple Notes folder name. Optional scope filter for 'list' and 'search'; for 'create' the target folder (defaults to 'Claude'). When 'accountName' is omitted and the folder name exists in multiple accounts, the operation returns an error — supply 'accountName' to disambiguate."
+        },
+        accountName: {
+          type: "string",
+          description: "Apple Notes account name. Optional scope filter for 'list', 'search', and 'create', and optional input for 'folders'."
         }
       },
       required: ["operation"]

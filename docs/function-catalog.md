@@ -25,28 +25,72 @@ Finds a contact name by phone number.
 
 ## Notes
 
-### `getAllNotes`
-Lists every note with its content.
+All read/write operations support optional scoping by `accountName` and
+`folderName`. Without scope, `list`/`search` read across all accounts. When
+`folderName` is given without `accountName` and the folder name exists in
+multiple accounts, the operation returns an error — supply `accountName` to
+disambiguate.
 
-**Example**
+### `getAllNotes`
+Lists every note with its content. Scope by `accountName` and/or `folderName`.
+
+**Example (unscoped)**
 ```json
 {"tool":"notes","operation":"list"}
 ```
 
+**Example (scoped)**
+```json
+{"tool":"notes","operation":"list","accountName":"<account>","folderName":"<folder>"}
+```
+
 ### `findNote`
-Searches notes for a text fragment.
+Searches notes for a text fragment. Same scope parameters as `list`.
 
 **Example**
 ```json
 {"tool":"notes","operation":"search","searchText":"meeting"}
 ```
 
+**Example (scoped)**
+```json
+{"tool":"notes","operation":"search","searchText":"meeting","accountName":"<account>","folderName":"<folder>"}
+```
+
 ### `createNote`
-Creates a new note in the specified folder.
+Creates a new note in the specified folder. Optional `accountName` ensures the
+folder lookup is scoped to one account when the same folder name exists in
+several accounts.
 
 **Example**
 ```json
 {"tool":"notes","operation":"create","title":"Todo","body":"- buy milk","folderName":"Claude"}
+```
+
+**Example (scoped)**
+```json
+{"tool":"notes","operation":"create","title":"Todo","body":"- buy milk","folderName":"Claude","accountName":"<account>"}
+```
+
+### `listAccounts`
+Lists the configured Apple Notes accounts.
+
+**Example**
+```json
+{"tool":"notes","operation":"accounts"}
+```
+
+### `listFolders`
+Lists folders. With `accountName`, restricts to that account.
+
+**Example (all folders)**
+```json
+{"tool":"notes","operation":"folders"}
+```
+
+**Example (one account)**
+```json
+{"tool":"notes","operation":"folders","accountName":"<account>"}
 ```
 
 ## Messages
