@@ -500,7 +500,7 @@ function initServer() {
                   content: [{
                     type: "text",
                     text: foundNotes.length ?
-                      foundNotes.map(note => `${note.name}:\n${note.content}`).join("\n\n") :
+                      foundNotes.map(formatNoteForOutput).join("\n\n") :
                       `No notes found for "${args.searchText}"${scopeSuffix}`
                   }],
                   isError: false
@@ -513,11 +513,26 @@ function initServer() {
                   content: [{
                     type: "text",
                     text: allNotes.length ?
-                      allNotes.map((note) => `${note.name}:\n${note.content}`)
+                      allNotes.map(formatNoteForOutput)
                       .join("\n\n") :
                       `No notes found${scopeSuffix}.`
                   }],
                   isError: false
+                };
+              }
+
+              case "get": {
+                if (!args.noteId) {
+                  throw new Error("noteId is required for get operation");
+                }
+
+                const note = await notesModule.getNote(args.noteId, scope);
+                return {
+                  content: [{
+                    type: "text",
+                    text: formatNoteForOutput(note),
+                  }],
+                  isError: false,
                 };
               }
 
@@ -538,10 +553,58 @@ function initServer() {
                   content: [{
                     type: "text",
                     text: result.success ?
-                      `Created note "${args.title}" in folder "${result.folderName}"${accountSuffix}${result.usedDefaultFolder ? ' (created new folder)' : ''}.` :
+                      `Created note "${args.title}" in folder "${result.folderName}"${accountSuffix}${result.usedDefaultFolder ? ' (created new folder)' : ''}.\n\n${result.note ? formatNoteForOutput(result.note) : ""}` :
                       `Failed to create note: ${result.message}`
                   }],
                   isError: !result.success
+                };
+              }
+
+              case "update": {
+                if (!args.noteId || typeof args.body !== "string") {
+                  throw new Error("noteId and body are required for update operation");
+                }
+
+                const result = await notesModule.updateNote(args.noteId, args.body, {
+                  ...scope,
+                  expectedName: args.expectedName,
+                  expectedPlaintextContains: args.expectedPlaintextContains,
+                  expectedModificationDate: args.expectedModificationDate,
+                  dryRun: args.dryRun,
+                });
+
+                return {
+                  content: [{
+                    type: "text",
+                    text: result.success ?
+                      `${result.dryRun ? "Dry run: would update" : "Updated"} note "${result.note?.name ?? args.noteId}".\n\n${result.note ? formatNoteForOutput(result.note) : ""}` :
+                      `Failed to update note: ${result.message}`,
+                  }],
+                  isError: !result.success,
+                };
+              }
+
+              case "delete": {
+                if (!args.noteId) {
+                  throw new Error("noteId is required for delete operation");
+                }
+
+                const result = await notesModule.deleteNote(args.noteId, {
+                  ...scope,
+                  expectedName: args.expectedName,
+                  expectedPlaintextContains: args.expectedPlaintextContains,
+                  expectedModificationDate: args.expectedModificationDate,
+                  dryRun: args.dryRun,
+                });
+
+                return {
+                  content: [{
+                    type: "text",
+                    text: result.success ?
+                      `${result.dryRun ? "Dry run: would delete" : "Deleted"} note "${result.note?.name ?? args.noteId}".\n\n${result.note ? formatNoteForOutput(result.note) : ""}` :
+                      `Failed to delete note: ${result.message}`,
+                  }],
+                  isError: !result.success,
                 };
               }
 
@@ -850,7 +913,7 @@ function initServer() {
                 if (!args.searchTerm) {
                   throw new Error("Search term is required for search operation");
                 }
-                const emails = await mailModule.searchMails(args.searchTerm, args.limit, args.includeHeaders, args.headerFilter);
+                const emails = await mailModule.searchMails(args.searchTerm, args.limit, args.includeHeaders, args.headerFilter, args.timeoutMs);
                 
                 let textContent = "";
                 if (emails.length > 0) {
@@ -1025,6 +1088,7 @@ function initServer() {
                   includeAttachments: args.includeAttachments,
                   includeHeaders: args.includeHeaders,
                   headerFilter: args.headerFilter,
+                  timeoutMs: args.timeoutMs,
                 };
                 const messages = await mailModule.listMessages(args.account, args.mailbox, opts);
                 
@@ -1093,6 +1157,7 @@ function initServer() {
                   headerFilter: args.headerFilter,
                   sort: args.sort,
                   cursor: args.cursor,
+                  timeoutMs: args.timeoutMs,
                 };
                 const page = await mailModule.listMessageMetadata(args.account, args.mailbox, opts);
                 const messages = page.messages;
@@ -1153,6 +1218,7 @@ function initServer() {
                   sort: args.sort,
                   cursor: args.cursor,
                   searchFields: args.searchFields,
+                  timeoutMs: args.timeoutMs,
                 };
                 const page = await mailModule.searchMessageMetadata(args.account, args.mailbox, args.searchTerm, opts);
                 const messages = page.messages;
@@ -1209,6 +1275,7 @@ function initServer() {
                   args.mailbox,
                   args.mailObjectId,
                   args.flagColor,
+                  { timeoutMs: args.timeoutMs },
                 );
                 const text =
                   `Message ${result.current.mailObjectId} flag: ` +
@@ -1238,6 +1305,7 @@ function initServer() {
                     includeMessageSource: args.includeMessageSource,
                     includeAttachments: args.includeAttachments,
                     dryRun: args.dryRun,
+                    timeoutMs: args.timeoutMs,
                   },
                 );
                 const messageStatus = result.messageFile
@@ -1270,6 +1338,7 @@ function initServer() {
                   args.targetMailbox,
                   {
                     dryRun: args.dryRun,
+                    timeoutMs: args.timeoutMs,
                   },
                 );
                 const text =
@@ -1884,13 +1953,53 @@ function isContactsArgs(args: unknown): args is {
   return true;
 }
 
+function formatNoteForOutput(note: {
+  id?: string;
+  name?: string;
+  title?: string;
+  content?: string;
+  plaintext?: string;
+  body?: string;
+  accountName?: string | null;
+  folderName?: string | null;
+  creationDate?: string | null;
+  modificationDate?: string | null;
+}): string {
+  const lines = [
+    `id: ${note.id ?? ""}`,
+    `name: ${note.name ?? note.title ?? ""}`,
+  ];
+
+  if (note.accountName || note.folderName) {
+    lines.push(`location: ${note.accountName ?? "unknown"}/${note.folderName ?? "unknown"}`);
+  }
+  if (note.creationDate) {
+    lines.push(`creationDate: ${note.creationDate}`);
+  }
+  if (note.modificationDate) {
+    lines.push(`modificationDate: ${note.modificationDate}`);
+  }
+
+  lines.push(`plaintext:\n${note.plaintext ?? note.content ?? ""}`);
+  if (note.body !== undefined) {
+    lines.push(`body:\n${note.body}`);
+  }
+
+  return lines.join("\n");
+}
+
 function isNotesArgs(args: unknown): args is {
-  operation: "search" | "list" | "create" | "accounts" | "folders";
+  operation: "search" | "list" | "get" | "create" | "update" | "delete" | "accounts" | "folders";
+  noteId?: string;
   searchText?: string;
   title?: string;
   body?: string;
   folderName?: string;
   accountName?: string;
+  expectedName?: string;
+  expectedPlaintextContains?: string;
+  expectedModificationDate?: string;
+  dryRun?: boolean;
 } {
   if (typeof args !== "object" || args === null) {
     return false;
@@ -1901,7 +2010,7 @@ function isNotesArgs(args: unknown): args is {
     return false;
   }
 
-  if (!["search", "list", "create", "accounts", "folders"].includes(operation)) {
+  if (!["search", "list", "get", "create", "update", "delete", "accounts", "folders"].includes(operation)) {
     return false;
   }
 
@@ -1921,15 +2030,52 @@ function isNotesArgs(args: unknown): args is {
     }
   }
 
+  if (operation === "get" || operation === "update" || operation === "delete") {
+    const { noteId } = args as { noteId?: unknown };
+    if (typeof noteId !== "string" || noteId === "") {
+      return false;
+    }
+  }
+
+  if (operation === "update") {
+    const { body } = args as { body?: unknown };
+    if (typeof body !== "string") {
+      return false;
+    }
+  }
+
   // Validate optional scope fields uniformly across all operations.
-  const { folderName, accountName } = args as {
+  const {
+    folderName,
+    accountName,
+    expectedName,
+    expectedPlaintextContains,
+    expectedModificationDate,
+    dryRun,
+  } = args as {
     folderName?: unknown;
     accountName?: unknown;
+    expectedName?: unknown;
+    expectedPlaintextContains?: unknown;
+    expectedModificationDate?: unknown;
+    dryRun?: unknown;
   };
   if (folderName !== undefined && (typeof folderName !== "string" || folderName === "")) {
     return false;
   }
   if (accountName !== undefined && (typeof accountName !== "string" || accountName === "")) {
+    return false;
+  }
+  if (expectedName !== undefined && typeof expectedName !== "string") {
+    return false;
+  }
+  if (expectedPlaintextContains !== undefined && typeof expectedPlaintextContains !== "string") {
+    return false;
+  }
+  if (expectedModificationDate !== undefined && typeof expectedModificationDate !== "string") {
+    return false;
+  }
+  if (dryRun !== undefined && typeof dryRun !== "boolean") {
     return false;
   }
 

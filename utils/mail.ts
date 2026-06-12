@@ -385,6 +385,30 @@ function writeUtf8File(path, text) {
   return Boolean(nsString.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null));
 }
 
+function findMessageByObjectId(mailbox, objectId) {
+  const numericId = Number(objectId);
+
+  // Fast path: native whose-Filter, 1 Apple Event (~40 ms)
+  if (Number.isFinite(numericId)) {
+    const matches = safeCall(() => mailbox.messages.whose({ id: numericId })(), []);
+    if (Array.isArray(matches) && matches.length > 0) {
+      return matches[0];
+    }
+  }
+
+  // Fallback: alle IDs in EINEM Event, dann per Index zugreifen
+  const ids = safeCall(() => ObjC.unwrap(mailbox.messages.id()), []);
+  if (Array.isArray(ids)) {
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i]) === String(objectId)) {
+        return mailbox.messages[i];
+      }
+    }
+  }
+
+  return null;
+}
+
 function getNestedMailboxes(mailboxes) {
   const result = [];
   const queue = Array.isArray(mailboxes) ? [...mailboxes] : [];
@@ -1136,12 +1160,14 @@ async function searchMails(
   limit = 10,
   includeHeaders?: boolean,
   headerFilter?: string[],
+  timeoutMs?: number,
 ): Promise<EmailMessage[]> {
   try {
     if (!(await checkMailAccess())) {
       return [];
     }
 
+    const normalizedTimeoutMs = normalizeMailboxTimeoutMs(timeoutMs);
     const normalizedLimit = normalizeLimit(limit);
     if (normalizedLimit === 0) {
       return [];
@@ -1196,7 +1222,10 @@ async function searchMails(
       return JSON.stringify(results);
     `);
 
-    const searchResults = await executeJXA<EmailMessage[]>(script);
+    const searchResults = await executeJXA<EmailMessage[]>(
+      script,
+      normalizedTimeoutMs === undefined ? undefined : { timeout: normalizedTimeoutMs },
+    );
     const resolvedResults = Array.isArray(searchResults) ? searchResults : [];
 
     return includeHeadersFlag ? processHeaders(resolvedResults, headerFilter) : resolvedResults;
@@ -1572,6 +1601,7 @@ async function listMessages(
     includeAttachments?: boolean;
     includeHeaders?: boolean;
     headerFilter?: string[];
+    timeoutMs?: number;
   },
 ): Promise<EmailMessage[]> {
   try {
@@ -1579,6 +1609,7 @@ async function listMessages(
       return [];
     }
 
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
     const limitLiteral =
@@ -1658,7 +1689,10 @@ async function listMessages(
       return JSON.stringify(result);
     `);
 
-    const messages = await executeJXA<EmailMessage[]>(script);
+    const messages = await executeJXA<EmailMessage[]>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
     const resolvedMessages = Array.isArray(messages) ? messages : [];
 
     return includeHeaders ? processHeaders(resolvedMessages, opts?.headerFilter) : resolvedMessages;
@@ -1682,6 +1716,7 @@ async function listMessageMetadata(
     cursor?: MessageMetadataCursor;
     searchTerm?: string;
     searchFields?: MessageMetadataSearchField[];
+    timeoutMs?: number;
   },
 ): Promise<EmailMessageMetadataPage> {
   try {
@@ -1689,6 +1724,7 @@ async function listMessageMetadata(
       return emptyMessageMetadataPage(opts);
     }
 
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
     const normalizedLimit = normalizeMetadataLimit(opts?.limit);
@@ -1916,7 +1952,10 @@ async function listMessageMetadata(
       return JSON.stringify({ messages: result, pageInfo });
     `);
 
-    const page = await executeJXA<EmailMessageMetadataPage>(script);
+    const page = await executeJXA<EmailMessageMetadataPage>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
     const resolvedPage = normalizeMessageMetadataPage(page, normalizedLimit, sort, opts);
 
     return includeHeaders
@@ -1948,6 +1987,7 @@ async function searchMessageMetadata(
     sort?: "dateSentAsc" | "dateSentDesc";
     cursor?: MessageMetadataCursor;
     searchFields?: MessageMetadataSearchField[];
+    timeoutMs?: number;
   },
 ): Promise<EmailMessageMetadataPage> {
   if (!opts?.startDate || !opts?.endDate) {
@@ -1974,6 +2014,9 @@ async function setMessageFlag(
   mailboxName: string,
   mailObjectId: string,
   flagColor: MessageFlagColor,
+  opts?: {
+    timeoutMs?: number;
+  },
 ): Promise<MessageFlagUpdateResult> {
   try {
     const normalizedFlagColor = normalizeMessageFlagColor(flagColor);
@@ -1982,6 +2025,7 @@ async function setMessageFlag(
       throw new Error("Mail access is not available");
     }
 
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const flagIndex = MESSAGE_FLAG_INDEX_BY_COLOR[normalizedFlagColor];
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
@@ -1993,23 +2037,6 @@ async function setMessageFlag(
       const mailboxName = "${escapedMailboxName}";
       const mailObjectId = "${escapedMailObjectId}";
       const flagIndex = ${flagIndex};
-
-      function findMessageByObjectId(mailbox, objectId) {
-        const messages = safeCall(() => mailbox.messages(), []);
-
-        if (!Array.isArray(messages)) {
-          return null;
-        }
-
-        for (const message of messages) {
-          const currentId = toText(safeCall(() => message.id(), null), "");
-          if (currentId === objectId) {
-            return message;
-          }
-        }
-
-        return null;
-      }
 
       const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
       if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
@@ -2043,7 +2070,10 @@ async function setMessageFlag(
       return JSON.stringify({ previous, current });
     `);
 
-    return await executeJXA<MessageFlagUpdateResult>(script);
+    return await executeJXA<MessageFlagUpdateResult>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
   } catch (error) {
     throw toMailError("Error setting message flag", error);
   }
@@ -2058,6 +2088,7 @@ async function exportMessageArtifacts(
     includeMessageSource?: boolean;
     includeAttachments?: boolean;
     dryRun?: boolean;
+    timeoutMs?: number;
   },
 ): Promise<MessageArtifactExportResult> {
   try {
@@ -2065,6 +2096,7 @@ async function exportMessageArtifacts(
       throw new Error("Mail access is not available");
     }
 
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
     const escapedMailObjectId = escapeJXAString(mailObjectId);
@@ -2082,23 +2114,6 @@ async function exportMessageArtifacts(
       const includeMessageSource = ${includeMessageSource};
       const includeAttachments = ${includeAttachments};
       const dryRun = ${dryRun};
-
-      function findMessageByObjectId(mailbox, objectId) {
-        const messages = safeCall(() => mailbox.messages(), []);
-
-        if (!Array.isArray(messages)) {
-          return null;
-        }
-
-        for (const message of messages) {
-          const currentId = toText(safeCall(() => message.id(), null), "");
-          if (currentId === objectId) {
-            return message;
-          }
-        }
-
-        return null;
-      }
 
       const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
       if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
@@ -2214,7 +2229,10 @@ async function exportMessageArtifacts(
       });
     `);
 
-    return await executeJXA<MessageArtifactExportResult>(script);
+    return await executeJXA<MessageArtifactExportResult>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
   } catch (error) {
     throw toMailError("Error exporting message artifacts", error);
   }
@@ -2227,6 +2245,7 @@ async function moveMessage(
   targetMailboxName: string,
   opts?: {
     dryRun?: boolean;
+    timeoutMs?: number;
   },
 ): Promise<MessageMoveResult> {
   try {
@@ -2234,6 +2253,7 @@ async function moveMessage(
       throw new Error("Mail access is not available");
     }
 
+    const timeoutMs = normalizeMailboxTimeoutMs(opts?.timeoutMs);
     const escapedAccountName = escapeJXAString(accountName);
     const escapedMailboxName = escapeJXAString(mailboxName);
     const escapedMailObjectId = escapeJXAString(mailObjectId);
@@ -2247,23 +2267,6 @@ async function moveMessage(
       const mailObjectId = "${escapedMailObjectId}";
       const targetMailboxName = "${escapedTargetMailboxName}";
       const dryRun = ${dryRun};
-
-      function findMessageByObjectId(mailbox, objectId) {
-        const messages = safeCall(() => mailbox.messages(), []);
-
-        if (!Array.isArray(messages)) {
-          return null;
-        }
-
-        for (const message of messages) {
-          const currentId = toText(safeCall(() => message.id(), null), "");
-          if (currentId === objectId) {
-            return message;
-          }
-        }
-
-        return null;
-      }
 
       const accountMatches = safeCall(() => Mail.accounts.whose({ name: accountName })(), []);
       if (!Array.isArray(accountMatches) || accountMatches.length === 0) {
@@ -2306,7 +2309,10 @@ async function moveMessage(
       });
     `);
 
-    return await executeJXA<MessageMoveResult>(script);
+    return await executeJXA<MessageMoveResult>(
+      script,
+      timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+    );
   } catch (error) {
     throw toMailError("Error moving message", error);
   }

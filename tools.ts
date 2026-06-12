@@ -139,14 +139,18 @@ const CONTACTS_TOOL: Tool = {
   
   const NOTES_TOOL: Tool = {
     name: "notes",
-    description: "Search, retrieve and create notes in Apple Notes. Supports scoping by 'accountName' and 'folderName' for 'list', 'search' and 'create'. Without scope, list/search read across all accounts. Use 'accounts' to list Apple Notes accounts and 'folders' to list folders (optionally for one account).",
+    description: "Search, retrieve, create, update, and delete notes in Apple Notes. Mutating existing notes requires a unique noteId; note names are never used for update/delete. Supports optional accountName/folderName scope validation. Use dryRun and expected* guards before destructive operations.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'search', 'list', 'create', 'accounts', or 'folders'",
-          enum: ["search", "list", "create", "accounts", "folders"]
+          description: "Operation to perform: 'search', 'list', 'get', 'create', 'update', 'delete', 'accounts', or 'folders'",
+          enum: ["search", "list", "get", "create", "update", "delete", "accounts", "folders"]
+        },
+        noteId: {
+          type: "string",
+          description: "Unique Apple Notes note id. Required for get, update, and delete. update/delete never operate by note name."
         },
         searchText: {
           type: "string",
@@ -158,15 +162,31 @@ const CONTACTS_TOOL: Tool = {
         },
         body: {
           type: "string",
-          description: "Content of the note to create (required for create operation)"
+          description: "HTML body for create/update. Updating replaces note.body; Apple Notes may reinterpret formatting, attachments may not be preserved as editable HTML, and the visible note name/title can change when the first body line changes."
         },
         folderName: {
           type: "string",
-          description: "Apple Notes folder name. Optional scope filter for 'list' and 'search'; for 'create' the target folder (defaults to 'Claude'). When 'accountName' is omitted and the folder name exists in multiple accounts, the operation returns an error — supply 'accountName' to disambiguate."
+          description: "Apple Notes folder name. Optional scope filter for list/search/get and safety validation for update/delete; for create the target folder (defaults to 'Claude'). When accountName is omitted and the folder name exists in multiple accounts, the operation returns an error."
         },
         accountName: {
           type: "string",
-          description: "Apple Notes account name. Optional scope filter for 'list', 'search', and 'create', and optional input for 'folders'."
+          description: "Apple Notes account name. Optional scope filter for list/search/get, create target disambiguation, folders input, and safety validation for update/delete."
+        },
+        expectedName: {
+          type: "string",
+          description: "Safety guard for get/update/delete: fail unless the note's current name exactly matches this value."
+        },
+        expectedPlaintextContains: {
+          type: "string",
+          description: "Safety guard for update/delete: fail unless the note's current plaintext contains this text."
+        },
+        expectedModificationDate: {
+          type: "string",
+          description: "Safety guard for update/delete: fail unless the note's current modificationDate exactly matches this ISO timestamp from list/search/get."
+        },
+        dryRun: {
+          type: "boolean",
+          description: "For update/delete, validate scope and safety guards but do not modify or delete the note."
         }
       },
       required: ["operation"]
@@ -221,7 +241,7 @@ const CONTACTS_TOOL: Tool = {
       properties: {
         operation: {
           type: "string",
-          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', 'moveMessage', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'",
+          description: "Operation to perform: 'unread', 'latest', 'search', 'searchMetadata', 'setMessageFlag', 'exportMessageArtifacts', 'moveMessage', 'send', 'mailboxes', 'accounts', 'accountSummaries', 'accountDetails', 'mailboxTree', 'mailboxProps', 'messages', or 'messageMetadata'. NOTE: 'searchMetadata' requires account, mailbox, searchTerm, startDate AND endDate (the date window scopes the mailbox scan); without all five the call is rejected.",
           enum: [
             "unread",
             "latest",
@@ -259,15 +279,15 @@ const CONTACTS_TOOL: Tool = {
         },
         startDate: {
           type: "string",
-          description: "Start date filter in ISO format (optional for messages operation)"
+          description: "Start date filter in ISO format. Optional for messages and messageMetadata operations. REQUIRED for searchMetadata (it scopes the mailbox scan to a date window)."
         },
         endDate: {
           type: "string",
-          description: "End date filter in ISO format (optional for messages operation)"
+          description: "End date filter in ISO format. Optional for messages and messageMetadata operations. REQUIRED for searchMetadata (it scopes the mailbox scan to a date window)."
         },
         searchTerm: {
           type: "string",
-          description: "Text to search for in emails. Required for search and searchMetadata."
+          description: "Text to search for in emails. Required for search and searchMetadata. Note: searchMetadata additionally requires account, mailbox, startDate AND endDate."
         },
         searchFields: {
           type: "array",
@@ -373,7 +393,7 @@ const CONTACTS_TOOL: Tool = {
         },
         timeoutMs: {
           type: "number",
-          description: "Optional JXA execution timeout in milliseconds for mailboxTree/mailboxProps. Values are capped between 1000 and 300000."
+          description: "Optional JXA execution timeout in milliseconds for mailboxTree, mailboxProps, messages, messageMetadata, searchMetadata, search, setMessageFlag, exportMessageArtifacts, and moveMessage. Default is 30000 (the JXA bridge default) when omitted. Raise this for large Exchange/IMAP mailboxes that would otherwise time out. Values are capped between 1000 and 300000."
         }
       },
       required: ["operation"]
