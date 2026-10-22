@@ -225,4 +225,114 @@ describe("notes", () => {
     expect(capturedScript).toContain('const accountName = "a\\"b\\\\c"');
     expect(capturedScript).toContain('const folderName = "ok"');
   });
+
+  it("getNote resolves by unique note id and validates optional scope", async () => {
+    let capturedScript = "";
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockResolvedValue({
+      success: true,
+      data: { id: "note-1", name: "Todo", content: "body" },
+    } as never);
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => {
+      capturedScript = script;
+      return script;
+    });
+
+    const notes = await loadNotes();
+    const result = await notes.getNote('id"\\1', {
+      accountName: "iCloud",
+      folderName: "Zettel",
+    });
+
+    expect(result.id).toBe("note-1");
+    expect(capturedScript).toContain('const targetNoteId = "id\\"\\\\1"');
+    expect(capturedScript).toContain("Notes.notes.whose({ id: targetNoteId })()");
+    expect(capturedScript).toContain("collectScopedNotes()");
+    expect(capturedScript).toContain("is outside the requested accountName/folderName scope");
+  });
+
+  it("updateNote sets note.body only after id lookup and safety guards", async () => {
+    let capturedScript = "";
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockResolvedValue({
+      success: true,
+      dryRun: false,
+      note: { id: "note-1", name: "Todo", content: "new" },
+    } as never);
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => {
+      capturedScript = script;
+      return script;
+    });
+
+    const notes = await loadNotes();
+    const result = await notes.updateNote("note-1", '<h1>A "quoted" body</h1>', {
+      expectedName: "Todo",
+      expectedPlaintextContains: "old",
+      expectedModificationDate: "2026-05-12T10:00:00.000Z",
+    });
+
+    expect(result.success).toBe(true);
+    expect(capturedScript).toContain('const newBody = "<h1>A \\"quoted\\" body</h1>"');
+    expect(capturedScript).toContain("assertSafetyGuards(before)");
+    expect(capturedScript).toContain("note.body = newBody");
+    expect(capturedScript).toContain("Notes.notes.whose({ id: targetNoteId })()");
+    expect(capturedScript).not.toContain("Notes.notes.whose({ name:");
+  });
+
+  it("deleteNote uses Notes.delete(note), supports dryRun, and never resolves by name", async () => {
+    let capturedScript = "";
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockResolvedValue({
+      success: true,
+      dryRun: true,
+      note: { id: "note-1", name: "Todo", content: "body" },
+    } as never);
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => {
+      capturedScript = script;
+      return script;
+    });
+
+    const notes = await loadNotes();
+    const result = await notes.deleteNote("note-1", {
+      dryRun: true,
+      expectedPlaintextContains: "body",
+    });
+
+    expect(result.dryRun).toBe(true);
+    expect(capturedScript).toContain("const dryRun = true");
+    expect(capturedScript).toContain("Dry run: note was not deleted");
+    expect(capturedScript).toContain("Notes.delete(note)");
+    expect(capturedScript).toContain("Notes.notes.whose({ id: targetNoteId })()");
+    expect(capturedScript).not.toContain("Notes.notes.whose({ name:");
+  });
+
+  it("safety guard failures are emitted by the JXA script", async () => {
+    let capturedScript = "";
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockResolvedValue({
+      success: true,
+      dryRun: true,
+      note: { id: "note-1", name: "Todo", content: "body" },
+    } as never);
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => {
+      capturedScript = script;
+      return script;
+    });
+
+    const notes = await loadNotes();
+    await notes.updateNote("note-1", "body", {
+      expectedName: "Expected",
+      expectedPlaintextContains: "needle",
+      expectedModificationDate: "2026-05-12T10:00:00.000Z",
+      dryRun: true,
+    });
+
+    expect(capturedScript).toContain("Safety guard failed: expectedName");
+    expect(capturedScript).toContain("Safety guard failed: expectedPlaintextContains");
+    expect(capturedScript).toContain("Safety guard failed: expectedModificationDate");
+  });
 });
