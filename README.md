@@ -54,6 +54,9 @@ npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
   - List notes (optionally scoped by account and folder)
   - Search & read notes in Apple Notes app (optionally scoped)
   - Create notes in a specific folder, optionally targeting an account
+  - Get notes by unique note ID
+  - Update note HTML bodies by unique note ID with optional safety guards and dry runs
+  - Delete notes by unique note ID with optional safety guards and dry runs
   - List Apple Notes accounts and folders
 - Contacts:
   - Search contacts for sending messages

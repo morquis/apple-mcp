@@ -7,13 +7,28 @@ import {
 } from "../core/jxa-bridge.js";
 
 type Note = {
+  id?: string;
   name: string;
+  title?: string;
   content: string;
+  plaintext?: string;
+  body?: string;
+  accountName?: string | null;
+  folderName?: string | null;
+  creationDate?: string | null;
+  modificationDate?: string | null;
 };
 
 type NotesScope = {
   accountName?: string;
   folderName?: string;
+};
+
+type NoteSafetyGuards = NotesScope & {
+  expectedName?: string;
+  expectedPlaintextContains?: string;
+  expectedModificationDate?: string;
+  dryRun?: boolean;
 };
 
 type CreateNoteResult = {
@@ -23,6 +38,13 @@ type CreateNoteResult = {
   folderName?: string;
   accountName?: string;
   usedDefaultFolder?: boolean;
+};
+
+type NoteMutationResult = {
+  success: boolean;
+  dryRun?: boolean;
+  note?: Note;
+  message?: string;
 };
 
 type NotesScriptResult<T> =
@@ -140,10 +162,155 @@ function buildResolveHelper(scope: NotesScope): string {
     .replace("FOLDER_NAME_LITERAL", jxaStringLiteral(scope.folderName));
 }
 
+const NOTE_SERIALIZER_HELPER = `
+function safeString(read, fallback) {
+  try {
+    const value = read();
+    if (value === null || value === undefined) {
+      return fallback;
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    try {
+      const unwrapped = ObjC.unwrap(value);
+      return unwrapped === null || unwrapped === undefined ? fallback : String(unwrapped);
+    } catch (_) {
+      return String(value);
+    }
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function safeDate(read) {
+  try {
+    const value = read();
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function serializeNote(note) {
+  const folder = (() => {
+    try {
+      return note.container();
+    } catch (_) {
+      return null;
+    }
+  })();
+  const account = (() => {
+    try {
+      return folder ? folder.container() : null;
+    } catch (_) {
+      return null;
+    }
+  })();
+  const name = safeString(() => note.name(), "");
+  const plaintext = safeString(() => note.plaintext(), "");
+
+  return {
+    id: safeString(() => note.id(), ""),
+    name,
+    title: name,
+    content: plaintext,
+    plaintext,
+    body: safeString(() => note.body(), ""),
+    accountName: account ? safeString(() => account.name(), null) : null,
+    folderName: folder ? safeString(() => folder.name(), null) : null,
+    creationDate: safeDate(() => note.creationDate()),
+    modificationDate: safeDate(() => note.modificationDate()),
+  };
+}
+
+function serializeNoteSummary(note) {
+  const name = safeString(() => note.name(), "");
+  const plaintext = safeString(() => note.plaintext(), "");
+
+  return {
+    id: safeString(() => note.id(), ""),
+    name,
+    title: name,
+    content: plaintext,
+    plaintext,
+    accountName: accountName,
+    folderName: folderName,
+    creationDate: null,
+    modificationDate: null,
+  };
+}
+`;
+
+function buildNoteIdHelper(id: string, scope: NotesScope = {}): string {
+  return `
+const targetNoteId = ${jxaStringLiteral(id)};
+${buildResolveHelper(scope)}
+${NOTE_SERIALIZER_HELPER}
+
+function resolveNoteById() {
+  if (!targetNoteId) {
+    throw new Error("noteId is required");
+  }
+
+  const notes = Notes.notes.whose({ id: targetNoteId })();
+  if (!notes || notes.length === 0) {
+    throw new Error('Note with id "' + targetNoteId + '" not found');
+  }
+  if (notes.length > 1) {
+    throw new Error('Note id "' + targetNoteId + '" matched multiple notes');
+  }
+
+  const note = notes[0];
+  if (accountName || folderName) {
+    const scopedNotes = collectScopedNotes();
+    let inScope = false;
+    for (let i = 0; i < scopedNotes.length; i++) {
+      if (safeString(() => scopedNotes[i].id(), "") === targetNoteId) {
+        inScope = true;
+        break;
+      }
+    }
+    if (!inScope) {
+      throw new Error('Note with id "' + targetNoteId + '" is outside the requested accountName/folderName scope');
+    }
+  }
+
+  return note;
+}
+`;
+}
+
+function buildGuardHelper(guards: NoteSafetyGuards): string {
+  return `
+const expectedName = ${jxaStringLiteral(guards.expectedName)};
+const expectedPlaintextContains = ${jxaStringLiteral(guards.expectedPlaintextContains)};
+const expectedModificationDate = ${jxaStringLiteral(guards.expectedModificationDate)};
+const dryRun = ${guards.dryRun ? "true" : "false"};
+
+function assertSafetyGuards(noteInfo) {
+  if (expectedName !== null && noteInfo.name !== expectedName) {
+    throw new Error('Safety guard failed: expectedName "' + expectedName + '" did not match note name "' + noteInfo.name + '"');
+  }
+  if (expectedPlaintextContains !== null && noteInfo.plaintext.indexOf(expectedPlaintextContains) === -1) {
+    throw new Error('Safety guard failed: expectedPlaintextContains was not found in note plaintext');
+  }
+  if (expectedModificationDate !== null && noteInfo.modificationDate !== expectedModificationDate) {
+    throw new Error('Safety guard failed: expectedModificationDate "' + expectedModificationDate + '" did not match note modificationDate "' + noteInfo.modificationDate + '"');
+  }
+}
+`;
+}
+
 async function getAllNotes(scope: NotesScope = {}): Promise<Note[]> {
   const script = wrapJXAFunction(`
     const Notes = Application("Notes");
     ${buildResolveHelper(scope)}
+    ${NOTE_SERIALIZER_HELPER}
 
     const notes = collectScopedNotes();
     const result = [];
@@ -151,10 +318,7 @@ async function getAllNotes(scope: NotesScope = {}): Promise<Note[]> {
     for (let i = 0; i < notes.length; i++) {
       const note = notes[i];
 
-      result.push({
-        name: ${JXAConverters.toString("note.name()", '""')},
-        content: ${JXAConverters.toString("note.plaintext()", '""')},
-      });
+      result.push(serializeNoteSummary(note));
     }
 
     return JSON.stringify({ success: true, data: result });
@@ -175,6 +339,7 @@ async function findNote(
   const script = wrapJXAFunction(`
     const Notes = Application("Notes");
     ${buildResolveHelper(scope)}
+    ${NOTE_SERIALIZER_HELPER}
     const searchText = "${escapedSearchText}";
     const lower = searchText.toLowerCase();
 
@@ -187,7 +352,7 @@ async function findNote(
         const name = ${JXAConverters.toString("n.name()", '""')};
         const body = ${JXAConverters.toString("n.plaintext()", '""')};
         if (name.toLowerCase().indexOf(lower) !== -1 || body.toLowerCase().indexOf(lower) !== -1) {
-          matches.push({ name: name, content: body });
+          matches.push(serializeNoteSummary(n));
         }
       }
       return JSON.stringify({ success: true, data: matches });
@@ -204,10 +369,7 @@ async function findNote(
     for (let i = 0; i < notes.length; i++) {
       const note = notes[i];
 
-      result.push({
-        name: ${JXAConverters.toString("note.name()", '""')},
-        content: ${JXAConverters.toString("note.plaintext()", '""')},
-      });
+      result.push(serializeNoteSummary(note));
     }
 
     return JSON.stringify({ success: true, data: result });
@@ -218,22 +380,6 @@ async function findNote(
 
   if (!Array.isArray(notes)) {
     return [];
-  }
-
-  if (notes.length === 0 && !hasScope) {
-    const allNotes = await getAllNotes();
-    const closestMatch = allNotes.find(({ name }) =>
-      name.toLowerCase().includes(searchText.toLowerCase()),
-    );
-
-    return closestMatch
-      ? [
-          {
-            name: closestMatch.name,
-            content: closestMatch.content,
-          },
-        ]
-      : [];
   }
 
   return notes;
@@ -259,6 +405,7 @@ async function createNote(
 
     const script = wrapJXAFunction(`
       const Notes = Application("Notes");
+      ${NOTE_SERIALIZER_HELPER}
       const title = "${escapedTitle}";
       const body = "${escapedBody}";
       const folderName = "${escapedFolderName}";
@@ -352,10 +499,7 @@ async function createNote(
 
       return JSON.stringify({
         success: true,
-        note: {
-          name: title,
-          content: body,
-        },
+        note: serializeNote(newNote),
         folderName: actualFolderName,
         accountName: actualAccountName,
         usedDefaultFolder,
@@ -377,6 +521,72 @@ async function createNote(
       message: `Failed to create note: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+async function getNote(noteId: string, scope: NotesScope = {}): Promise<Note> {
+  const script = wrapJXAFunction(`
+    const Notes = Application("Notes");
+    ${buildNoteIdHelper(noteId, scope)}
+
+    const note = resolveNoteById();
+    return JSON.stringify({ success: true, data: serializeNote(note) });
+  `);
+
+  const raw = await executeJXA<NotesScriptResult<Note>>(script);
+  return unwrapScriptResult(raw);
+}
+
+async function updateNote(
+  noteId: string,
+  body: string,
+  guards: NoteSafetyGuards = {},
+): Promise<NoteMutationResult> {
+  const script = wrapJXAFunction(`
+    const Notes = Application("Notes");
+    const newBody = ${jxaStringLiteral(body)};
+    ${buildNoteIdHelper(noteId, guards)}
+    ${buildGuardHelper(guards)}
+
+    const note = resolveNoteById();
+    const before = serializeNote(note);
+    assertSafetyGuards(before);
+
+    if (dryRun) {
+      return JSON.stringify({ success: true, dryRun: true, note: before, message: "Dry run: note body was not updated" });
+    }
+
+    note.body = newBody;
+    const after = serializeNote(note);
+    return JSON.stringify({ success: true, dryRun: false, note: after });
+  `);
+
+  const result = await executeJXA<NoteMutationResult>(script);
+  return result ?? { success: false, message: "Failed to update note: empty response" };
+}
+
+async function deleteNote(
+  noteId: string,
+  guards: NoteSafetyGuards = {},
+): Promise<NoteMutationResult> {
+  const script = wrapJXAFunction(`
+    const Notes = Application("Notes");
+    ${buildNoteIdHelper(noteId, guards)}
+    ${buildGuardHelper(guards)}
+
+    const note = resolveNoteById();
+    const before = serializeNote(note);
+    assertSafetyGuards(before);
+
+    if (dryRun) {
+      return JSON.stringify({ success: true, dryRun: true, note: before, message: "Dry run: note was not deleted" });
+    }
+
+    Notes.delete(note);
+    return JSON.stringify({ success: true, dryRun: false, note: before });
+  `);
+
+  const result = await executeJXA<NoteMutationResult>(script);
+  return result ?? { success: false, message: "Failed to delete note: empty response" };
 }
 
 async function listAccounts(): Promise<string[]> {
@@ -428,12 +638,15 @@ async function listFolders(accountName?: string): Promise<string[]> {
   return Array.isArray(folders) ? folders : [];
 }
 
-export type { Note, NotesScope, CreateNoteResult };
+export type { Note, NotesScope, NoteSafetyGuards, CreateNoteResult, NoteMutationResult };
 
 export default {
   getAllNotes,
   findNote,
   createNote,
+  getNote,
+  updateNote,
+  deleteNote,
   listAccounts,
   listFolders,
 };

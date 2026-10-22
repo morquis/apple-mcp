@@ -31,8 +31,24 @@ describe("notes tool schema", () => {
 
     expect(operation?.enum).toBeDefined();
     expect(operation?.enum).toEqual(
-      expect.arrayContaining(["search", "list", "create", "accounts", "folders"]),
+      expect.arrayContaining(["search", "list", "get", "create", "update", "delete", "accounts", "folders"]),
     );
+  });
+
+  it("exposes id-based mutation fields and safety guards", () => {
+    const tool = findNotesTool();
+    const props = tool.inputSchema.properties ?? {};
+
+    expect(Object.keys(props)).toEqual(expect.arrayContaining([
+      "noteId",
+      "expectedName",
+      "expectedPlaintextContains",
+      "expectedModificationDate",
+      "dryRun",
+    ]));
+
+    const noteId = props.noteId as { description?: string } | undefined;
+    expect(noteId?.description ?? "").toMatch(/Required for get, update, and delete/i);
   });
 
   it("documents the multi-account ambiguity rule for folderName", () => {

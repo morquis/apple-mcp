@@ -26,10 +26,16 @@ Finds a contact name by phone number.
 ## Notes
 
 All read/write operations support optional scoping by `accountName` and
-`folderName`. Without scope, `list`/`search` read across all accounts. When
+`folderName`. Without scope, `list`/`search` read across all accounts. Existing
+notes are updated or deleted only by unique `noteId`, never by name. When
 `folderName` is given without `accountName` and the folder name exists in
 multiple accounts, the operation returns an error — supply `accountName` to
 disambiguate.
+
+`list` and `search` return lightweight metadata needed for safe follow-up
+calls: `id`, `name`/`title`, `plaintext`/`content`, and scoped account/folder
+when known. `get` returns the full single-note payload, including HTML `body`
+and creation/modification dates when Apple Notes exposes them.
 
 ### `getAllNotes`
 Lists every note with its content. Scope by `accountName` and/or `folderName`.
@@ -71,6 +77,43 @@ several accounts.
 ```json
 {"tool":"notes","operation":"create","title":"Todo","body":"- buy milk","folderName":"Claude","accountName":"<account>"}
 ```
+
+### `getNote`
+Reads one note by unique ID. Optional `accountName`/`folderName` validates that
+the resolved note is in the expected scope.
+
+**Example**
+```json
+{"tool":"notes","operation":"get","noteId":"<note-id>","accountName":"iCloud","folderName":"Zettel"}
+```
+
+### `updateNote`
+Replaces a note's HTML `body` by unique ID. Optional guards fail the operation
+unless the current note matches expectations: `accountName`, `folderName`,
+`expectedName`, `expectedPlaintextContains`, and `expectedModificationDate`.
+Set `dryRun:true` to validate without writing.
+
+Apple Notes treats `body` as HTML. Updating it can rewrite formatting, may not
+preserve attachments as editable HTML, and can change the visible note
+name/title when the first body line changes.
+
+**Example**
+```json
+{"tool":"notes","operation":"update","noteId":"<note-id>","body":"<h1>Todo</h1><p>open links...</p>","accountName":"iCloud","folderName":"Zettel","expectedName":"Todo","expectedPlaintextContains":"open links","expectedModificationDate":"2026-05-12T10:00:00.000Z","dryRun":true}
+```
+
+### `deleteNote`
+Deletes a note by unique ID. Optional guards are the same as `updateNote`; use
+`dryRun:true` before destructive cleanup.
+
+**Example**
+```json
+{"tool":"notes","operation":"delete","noteId":"<note-id>","accountName":"iCloud","folderName":"Zettel","expectedName":"Todo","expectedPlaintextContains":"processed","dryRun":true}
+```
+
+For workflows such as `iCloud/Zettel`, create the destination/archive notes
+first. Then delete the original only by `noteId`, or update that original by
+`noteId` to leave only still-open links.
 
 ### `listAccounts`
 Lists the configured Apple Notes accounts.
