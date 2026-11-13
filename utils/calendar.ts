@@ -19,9 +19,11 @@ interface CalendarEvent {
 
 // Configuration for timeouts
 const CONFIG = {
-  // Calendar.app scripting (open/create). open still uses a whose() lookup,
-  // which can take 30-90s per Exchange calendar.
+  // Calendar.app scripting for create.
   TIMEOUT_MS: 300_000,
+  // open: EventKit lookup plus Calendar.app show(); allows for launching
+  // Calendar.app if it is not running.
+  OPEN_TIMEOUT_MS: 60_000,
   // EventKit queries (list/search) answer in milliseconds; anything slower
   // is a real failure and must surface as an error.
   EVENTKIT_TIMEOUT_MS: 30_000,
@@ -76,9 +78,7 @@ function toNSDate(date) {
   return $.NSDate.dateWithTimeIntervalSince1970(date.getTime() / 1000);
 }
 
-// Returns occurrences overlapping [rangeStart, rangeEnd], sorted by start.
-// Throws on missing access or unknown calendar name, never returns a silent [].
-function queryEventKit(rangeStart, rangeEnd, calendarName, matchesFn) {
+function requireEventKitAccess() {
   var status = Number($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent));
   // 3 = EKAuthorizationStatusFullAccess (macOS 14+; "authorized" before).
   if (status !== 3) {
@@ -88,8 +88,13 @@ function queryEventKit(rangeStart, rangeEnd, calendarName, matchesFn) {
       "to the app that launches the MCP server."
     );
   }
+  return $.EKEventStore.alloc.init;
+}
 
-  var store = $.EKEventStore.alloc.init;
+// Returns occurrences overlapping [rangeStart, rangeEnd], sorted by start.
+// Throws on missing access or unknown calendar name, never returns a silent [].
+function queryEventKit(rangeStart, rangeEnd, calendarName, matchesFn) {
+  var store = requireEventKitAccess();
   var calendars = $();
   if (calendarName) {
     var all = store.calendarsForEntityType($.EKEntityTypeEvent);
@@ -155,9 +160,12 @@ function parseRange(fromDateInput, toDateInput, defaultDays) {
 }
 `;
 
-async function executeEventKitScript<T>(functionBody: string): Promise<T> {
+async function executeEventKitScript<T>(
+  functionBody: string,
+  timeout: number = CONFIG.EVENTKIT_TIMEOUT_MS,
+): Promise<T> {
   const script = wrapJXAFunction(EVENTKIT_JXA_HELPERS + "\n" + functionBody);
-  return await executeJXA<T>(script, { timeout: CONFIG.EVENTKIT_TIMEOUT_MS });
+  return await executeJXA<T>(script, { timeout });
 }
 
 async function executeCalendarScript<T>(functionBody: string): Promise<T> {
@@ -229,67 +237,45 @@ async function searchEvents(
 }
 
 /**
- * Open a specific calendar event in the Calendar app
+ * Open a specific calendar event in the Calendar app.
+ * The event is resolved through EventKit (calendarItemIdentifier, the id that
+ * search/list return) and addressed in Calendar.app directly by calendar id
+ * and event id, so no whose() scan over Exchange calendars is needed.
  * @param eventId ID of the event to open
  * @returns Result object indicating success or failure
  */
 async function openEvent(eventId: string): Promise<{ success: boolean; message: string }> {
   try {
-    if (!(await checkCalendarAccess())) {
-      return {
-        success: false,
-        message:
-          "Cannot access Calendar app. Please grant access in System Settings > Privacy & Security > Automation.",
-      };
-    }
-
-    console.error(`openEvent - Attempting to open event with ID: ${eventId}`);
-
     const escapedEventId = escapeJXAString(eventId);
-    const result = await executeCalendarScript<{ success: boolean; message: string }>(`
-      const Calendar = Application("Calendar");
-      const eventId = "${escapedEventId}";
-      const allCalendars = Calendar.calendars();
+    return await executeEventKitScript<{ success: boolean; message: string }>(`
+      var eventId = "${escapedEventId}";
+      var store = requireEventKitAccess();
+      var item = store.calendarItemWithIdentifier(eventId);
 
-      for (let i = 0; i < allCalendars.length; i++) {
-        try {
-          const calendar = allCalendars[i];
-          const events = calendar.events.whose({
-            uid: { _equals: eventId },
-          })();
-
-          if (events.length === 0) {
-            continue;
-          }
-
-          const event = events[0];
-          Calendar.activate();
-          event.show();
-
-          return JSON.stringify({
-            success: true,
-            message: "Successfully opened event: " + ${JXAConverters.toString(
-              JXAConverters.safeGet("event", "summary", '""'),
-              '"Unknown Title"',
-            )},
-          });
-        } catch (_) {
-          // Skip calendars that can't be processed.
-        }
+      if (!item || item.isNil()) {
+        return JSON.stringify({
+          success: false,
+          message: "No event found with ID: " + eventId,
+        });
       }
 
-      return JSON.stringify({
-        success: false,
-        message: "No event found with ID: " + eventId,
-      });
-    `);
+      var calendarId = ekString(item.calendar.calendarIdentifier);
+      var Calendar = Application("Calendar");
+      var event = Calendar.calendars.byId(calendarId).events.byId(eventId);
+      var title = String(event.summary() || "Unknown Title");
+      Calendar.activate();
+      event.show();
 
-    return result;
+      return JSON.stringify({
+        success: true,
+        message: "Successfully opened event: " + title,
+      });
+    `, CONFIG.OPEN_TIMEOUT_MS);
   } catch (error) {
-    console.error(`Error opening event: ${error instanceof Error ? error.message : String(error)}`);
+    // index.ts prefixes "Error opening event: " itself.
     return {
       success: false,
-      message: `Error opening event: ${error instanceof Error ? error.message : String(error)}`,
+      message: error instanceof Error ? error.message : String(error),
     };
   }
 }
