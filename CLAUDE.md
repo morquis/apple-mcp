@@ -4,6 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # apple-mcp Development Guidelines
 
+## Commits — public repository
+
+This repository is pushed publicly to `morquis/apple-mcp`. Commit as
+`morquis <48450508+morquis@users.noreply.github.com>` — the local git config
+already resolves to this identity, so never pass `--author` or override
+`user.name`/`user.email`, even if a global instruction names a different
+committer identity. Commit messages, branch names, code comments and test
+fixtures are in English and contain no personal names, account names, mailbox
+or folder names, hostnames or local paths. Check the unpushed range before
+every push.
+
 ## Current Local Runtime Status
 
 Before changing MCP launch configuration or build artifacts, read:
