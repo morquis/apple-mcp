@@ -17,15 +17,14 @@ interface CalendarEvent {
   url: string | null;
 }
 
-// Configuration for timeouts and limits
+// Configuration for timeouts
 const CONFIG = {
-  // Maximum time (in ms) to wait for calendar operations.
-  // Exchange calendars with thousands of events can take 30-90s per calendar for
-  // .whose() queries depending on server load. With multiple Exchange calendars,
-  // total time can reach 4-5 minutes. Set to 5 minutes as maximum.
+  // Calendar.app scripting (open/create). open still uses a whose() lookup,
+  // which can take 30-90s per Exchange calendar.
   TIMEOUT_MS: 300_000,
-  // Maximum number of events to process per calendar in getEvents
-  MAX_EVENTS_PER_CALENDAR: 200,
+  // EventKit queries (list/search) answer in milliseconds; anything slower
+  // is a real failure and must surface as an error.
+  EVENTKIT_TIMEOUT_MS: 30_000,
 };
 
 function escapeJXAString(value: string): string {
@@ -42,81 +41,127 @@ function toOptionalStringExpression(value?: string): string {
 }
 
 /**
- * JXA helper functions for RRULE expansion and event building.
- * JXA/AppleScript does not expand recurring events into individual occurrences,
- * so we need to parse RRULE strings and compute occurrences within a date range.
+ * EventKit query helper (JXA ObjC bridge).
+ *
+ * Calendar.app's scripting interface returns stored events only: a recurring
+ * series is one master item dated at its first occurrence, so date-range
+ * `whose()` queries miss every series that started before the range, and on
+ * Exchange calendars each query takes 30-100 s. EventKit's
+ * eventsMatchingPredicate expands recurring series into occurrences
+ * (including exceptions and detached instances) and answers across all
+ * calendars in milliseconds. It needs Calendar "Full Access" for the process
+ * that launched the server.
  */
-const CALENDAR_JXA_HELPERS = `
-function parseRRule(rrule) {
-  if (!rrule || typeof rrule !== "string") return null;
-  var parts = {};
-  var pairs = rrule.split(";");
-  for (var i = 0; i < pairs.length; i++) {
-    var kv = pairs[i].split("=");
-    if (kv.length === 2) parts[kv[0]] = kv[1];
+const EVENTKIT_JXA_HELPERS = `
+ObjC.import("EventKit");
+ObjC.import("Foundation");
+
+function ekString(value) {
+  if (value === undefined || value === null) return null;
+  try {
+    var js = ObjC.unwrap(value);
+    return js === undefined || js === null || js === "" ? null : String(js);
+  } catch (_) {
+    return null;
   }
-  return parts;
 }
 
-function expandOccurrences(eventStart, eventEnd, rrule, rangeStart, rangeEnd) {
-  var parsed = parseRRule(rrule);
-  if (!parsed || !parsed.FREQ) return [];
-
-  var freq = parsed.FREQ;
-  var interval = parsed.INTERVAL ? parseInt(parsed.INTERVAL, 10) : 1;
-  var until = parsed.UNTIL ? parseUntilDate(parsed.UNTIL) : null;
-  var count = parsed.COUNT ? parseInt(parsed.COUNT, 10) : null;
-
-  var durationMs = eventEnd.getTime() - eventStart.getTime();
-  var occurrences = [];
-  var current = new Date(eventStart.getTime());
-  var generated = 0;
-  var maxIterations = 1000;
-
-  while (maxIterations-- > 0) {
-    if (until && current > until) break;
-    if (count !== null && generated >= count) break;
-    if (current > rangeEnd) break;
-
-    var occEnd = new Date(current.getTime() + durationMs);
-    if (occEnd >= rangeStart && current <= rangeEnd) {
-      occurrences.push({ start: new Date(current.getTime()), end: occEnd });
-    }
-
-    generated++;
-    if (freq === "DAILY") {
-      current.setDate(current.getDate() + interval);
-    } else if (freq === "WEEKLY") {
-      current.setDate(current.getDate() + 7 * interval);
-    } else if (freq === "MONTHLY") {
-      current.setMonth(current.getMonth() + interval);
-    } else if (freq === "YEARLY") {
-      current.setFullYear(current.getFullYear() + interval);
-    } else {
-      break;
-    }
-  }
-
-  return occurrences;
+function ekDate(nsDate) {
+  if (!nsDate) return null;
+  var seconds = Number(nsDate.timeIntervalSince1970);
+  return Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
 }
 
-function parseUntilDate(s) {
-  // UNTIL format: 20270131T225959Z or 20270131
-  if (s.length >= 15) {
-    return new Date(
-      parseInt(s.substr(0,4),10), parseInt(s.substr(4,2),10)-1, parseInt(s.substr(6,2),10),
-      parseInt(s.substr(9,2),10), parseInt(s.substr(11,2),10), parseInt(s.substr(13,2),10)
+function toNSDate(date) {
+  return $.NSDate.dateWithTimeIntervalSince1970(date.getTime() / 1000);
+}
+
+// Returns occurrences overlapping [rangeStart, rangeEnd], sorted by start.
+// Throws on missing access or unknown calendar name, never returns a silent [].
+function queryEventKit(rangeStart, rangeEnd, calendarName, matchesFn) {
+  var status = Number($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent));
+  // 3 = EKAuthorizationStatusFullAccess (macOS 14+; "authorized" before).
+  if (status !== 3) {
+    throw new Error(
+      "Calendar access denied (EventKit authorization status " + status +
+      "). Grant Full Access in System Settings > Privacy & Security > Calendars " +
+      "to the app that launches the MCP server."
     );
   }
-  if (s.length >= 8) {
-    return new Date(parseInt(s.substr(0,4),10), parseInt(s.substr(4,2),10)-1, parseInt(s.substr(6,2),10));
+
+  var store = $.EKEventStore.alloc.init;
+  var calendars = $();
+  if (calendarName) {
+    var all = store.calendarsForEntityType($.EKEntityTypeEvent);
+    var matched = $.NSMutableArray.array;
+    var available = [];
+    for (var c = 0; c < Number(all.count); c++) {
+      var cal = all.objectAtIndex(c);
+      var title = ekString(cal.title);
+      available.push(title);
+      if (title === calendarName) matched.addObject(cal);
+    }
+    if (Number(matched.count) === 0) {
+      throw new Error(
+        'Calendar "' + calendarName + '" not found. Available: ' + available.join(", ")
+      );
+    }
+    calendars = matched;
   }
-  return null;
+
+  var predicate = store.predicateForEventsWithStartDateEndDateCalendars(
+    toNSDate(rangeStart), toNSDate(rangeEnd), calendars
+  );
+  var events = store.eventsMatchingPredicate(predicate);
+  var results = [];
+
+  for (var i = 0; i < Number(events.count); i++) {
+    var ev = events.objectAtIndex(i);
+    var item = {
+      // calendarItemIdentifier equals Calendar.app's AppleScript uid, which
+      // openEvent looks up; occurrences of one series share this id.
+      id: ekString(ev.calendarItemIdentifier) || ekString(ev.eventIdentifier) || "",
+      title: ekString(ev.title) || "Unknown Title",
+      location: ekString(ev.location),
+      notes: ekString(ev.notes),
+      startDate: ekDate(ev.startDate),
+      endDate: ekDate(ev.endDate),
+      calendarName: ekString(ev.calendar.title) || "",
+      isAllDay: ev.isAllDay === true,
+      url: ev.URL && !ev.URL.isNil() ? ekString(ev.URL.absoluteString) : null,
+    };
+    if (!matchesFn || matchesFn(item)) results.push(item);
+  }
+
+  results.sort(function (a, b) {
+    return (a.startDate || "").localeCompare(b.startDate || "");
+  });
+  return results;
+}
+
+function parseRange(fromDateInput, toDateInput, defaultDays) {
+  var today = new Date();
+  var rangeStart = fromDateInput ? new Date(fromDateInput) : today;
+  var rangeEnd = toDateInput
+    ? new Date(toDateInput)
+    : new Date(today.getTime() + defaultDays * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
+    throw new Error("Invalid date range");
+  }
+  if (rangeEnd <= rangeStart) {
+    throw new Error("toDate must be after fromDate");
+  }
+  return { start: rangeStart, end: rangeEnd };
 }
 `;
 
+async function executeEventKitScript<T>(functionBody: string): Promise<T> {
+  const script = wrapJXAFunction(EVENTKIT_JXA_HELPERS + "\n" + functionBody);
+  return await executeJXA<T>(script, { timeout: CONFIG.EVENTKIT_TIMEOUT_MS });
+}
+
 async function executeCalendarScript<T>(functionBody: string): Promise<T> {
-  const script = wrapJXAFunction(CALENDAR_JXA_HELPERS + "\n" + functionBody);
+  const script = wrapJXAFunction(functionBody);
   return await executeJXA<T>(script, { timeout: CONFIG.TIMEOUT_MS });
 }
 
@@ -142,13 +187,15 @@ async function checkCalendarAccess(): Promise<boolean> {
 }
 
 /**
- * Search for calendar events that match the search text
- * @param searchText Text to search for in event titles (summary field only; location/notes search disabled due to Exchange performance)
+ * Search for calendar events (occurrences, including recurring series) whose
+ * title, location or notes contain the search text (case-insensitive).
+ * Errors (missing access, unknown calendar, timeout) are thrown, never
+ * reported as an empty result.
+ * @param searchText Text to search for
  * @param limit Optional limit on the number of results (default 10)
- * @param fromDate Optional start date for search range in ISO format (default: today)
- * @param toDate Optional end date for search range in ISO format (default: 30 days from now)
- * @param calendarName Optional calendar name to search in (searches all if not specified)
- * @returns Array of calendar events matching the search criteria
+ * @param fromDate Optional start date in ISO format (default: now)
+ * @param toDate Optional end date in ISO format (default: 30 days from now)
+ * @param calendarName Optional calendar name (all calendars if not specified)
  */
 async function searchEvents(
   searchText: string,
@@ -157,137 +204,28 @@ async function searchEvents(
   toDate?: string,
   calendarName?: string,
 ): Promise<CalendarEvent[]> {
-  try {
-    if (!(await checkCalendarAccess())) {
-      return [];
-    }
+  const escapedSearchText = escapeJXAString(searchText);
+  const normalizedLimit = Math.max(0, Math.trunc(limit));
 
-    console.error(`searchEvents - Processing calendars for search: "${searchText}"${calendarName ? ` in calendar: "${calendarName}"` : ""}`);
+  const events = await executeEventKitScript<CalendarEvent[]>(`
+    var searchText = "${escapedSearchText}";
+    var requestedLimit = ${normalizedLimit};
+    var fromDateInput = ${toOptionalStringExpression(fromDate)};
+    var toDateInput = ${toOptionalStringExpression(toDate)};
+    var targetCalendarName = ${toOptionalStringExpression(calendarName)};
 
-    const escapedSearchText = escapeJXAString(searchText);
-    const fromDateExpression = toOptionalStringExpression(fromDate);
-    const toDateExpression = toOptionalStringExpression(toDate);
-    const calendarNameExpression = toOptionalStringExpression(calendarName);
-    const normalizedLimit = Math.max(0, Math.trunc(limit));
-
-    const events = await executeCalendarScript<CalendarEvent[]>(`
-      var Calendar = Application("Calendar");
-      var searchText = "${escapedSearchText}";
-      var requestedLimit = ${normalizedLimit};
-      var fromDateInput = ${fromDateExpression};
-      var toDateInput = ${toDateExpression};
-      var targetCalendarName = ${calendarNameExpression};
-      var maxEventsPerCalendar = ${CONFIG.MAX_EVENTS_PER_CALENDAR};
-
-      var today = new Date();
-      var rangeStart = fromDateInput ? new Date(fromDateInput) : today;
-      var rangeEnd = toDateInput
-        ? new Date(toDateInput)
-        : new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-      if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
-        throw new Error("Invalid date range");
-      }
-
-      var matchingEvents = [];
-      var seenIds = {};
-      var allCalendars = targetCalendarName
-        ? Calendar.calendars.whose({ name: targetCalendarName })()
-        : Calendar.calendars();
-
-      function readEvent(event, calendarName) {
-        var title = ${JXAConverters.toString(
-          JXAConverters.safeGet("event", "summary", '""'),
-          '"Unknown Title"',
-        )};
-        var location = ${JXAConverters.toString(
-          JXAConverters.safeGet("event", "location", '""'),
-          '""',
-        )};
-        var notes = ${JXAConverters.toString(
-          JXAConverters.safeGet("event", "description", '""'),
-          '""',
-        )};
-        var uid = ${JXAConverters.toString(
-          JXAConverters.safeGet("event", "uid", "null"),
-          '"unknown-" + Date.now() + "-" + Math.random()',
-        )};
-        var isAllDay = Boolean(${JXAConverters.safeGet("event", "alldayEvent", "false")});
-        var url = ${JXAConverters.toString(
-          JXAConverters.safeGet("event", "url", "null"),
-          "null",
-        )};
-        var evStart = ${JXAConverters.safeGet("event", "startDate", "null")};
-        var evEnd = ${JXAConverters.safeGet("event", "endDate", "null")};
-        var rrule = null;
-        try { rrule = event.recurrence(); } catch(_) {}
-
-        return { title: title, location: location, notes: notes, uid: uid,
-                 isAllDay: isAllDay, url: url, evStart: evStart, evEnd: evEnd,
-                 rrule: rrule, calendarName: calendarName };
-      }
-
-      function toOutput(info, startOverride, endOverride) {
-        var startD = startOverride || info.evStart;
-        var endD = endOverride || info.evEnd;
-        return {
-          id: info.uid, title: info.title, location: info.location, notes: info.notes,
-          startDate: startD instanceof Date && !Number.isNaN(startD.getTime()) ? startD.toISOString() : null,
-          endDate: endD instanceof Date && !Number.isNaN(endD.getTime()) ? endD.toISOString() : null,
-          calendarName: info.calendarName, isAllDay: info.isAllDay, url: info.url,
-        };
-      }
-
-      // Strategy: search by summary first (.whose() query), then check each
-      // match for recurrence and expand if needed. Exchange calendars with
-      // thousands of events take 15-20s per .whose() query, so we use a
-      // single query per calendar (summary only — _or doubles the time).
-      for (var i = 0; i < allCalendars.length && matchingEvents.length < requestedLimit; i++) {
-        try {
-          var calendar = allCalendars[i];
-          var calendarName = ${JXAConverters.toString("calendar.name()", '""')};
-
-          var textMatches = calendar.events.whose({ summary: { _contains: searchText } })();
-
-          for (var j = 0; j < textMatches.length && matchingEvents.length < requestedLimit; j++) {
-            try {
-              var info = readEvent(textMatches[j], calendarName);
-              if (seenIds[info.uid]) continue;
-              seenIds[info.uid] = true;
-
-              if (info.rrule && info.evStart && info.evEnd) {
-                // Recurring event: expand occurrences within range
-                var occurrences = expandOccurrences(info.evStart, info.evEnd, info.rrule, rangeStart, rangeEnd);
-                for (var o = 0; o < occurrences.length && matchingEvents.length < requestedLimit; o++) {
-                  matchingEvents.push(toOutput(info, occurrences[o].start, occurrences[o].end));
-                }
-              } else if (info.evStart && info.evStart >= rangeStart && info.evStart <= rangeEnd) {
-                // Non-recurring: include if in range
-                matchingEvents.push(toOutput(info, null, null));
-              }
-            } catch (_) {}
-          }
-        } catch (_) {}
-      }
-
-      // Sort by startDate
-      matchingEvents.sort(function(a, b) {
-        return (a.startDate || "").localeCompare(b.startDate || "");
+    var range = parseRange(fromDateInput, toDateInput, 30);
+    var needle = searchText.toLowerCase();
+    var matches = queryEventKit(range.start, range.end, targetCalendarName, function (ev) {
+      return [ev.title, ev.location, ev.notes].some(function (field) {
+        return typeof field === "string" && field.toLowerCase().indexOf(needle) !== -1;
       });
+    });
 
-      return JSON.stringify(matchingEvents.slice(0, requestedLimit));
-    `);
+    return JSON.stringify(matches.slice(0, requestedLimit));
+  `);
 
-    if (!Array.isArray(events) || events.length === 0) {
-      console.error("searchEvents - No events found");
-      return [];
-    }
-
-    return events;
-  } catch (error) {
-    console.error(`Error searching events: ${error instanceof Error ? error.message : String(error)}`);
-    return [];
-  }
+  return Array.isArray(events) ? events : [];
 }
 
 /**
@@ -357,12 +295,13 @@ async function openEvent(eventId: string): Promise<{ success: boolean; message: 
 }
 
 /**
- * Get all calendar events in a specified date range
+ * Get all calendar event occurrences overlapping a date range, including
+ * occurrences of recurring series. Errors are thrown, never reported as an
+ * empty result.
  * @param limit Optional limit on the number of results (default 10)
- * @param fromDate Optional start date for search range in ISO format (default: today)
- * @param toDate Optional end date for search range in ISO format (default: 7 days from now)
- * @param calendarName Optional calendar name to filter (searches all if not specified)
- * @returns Array of calendar events in the specified date range
+ * @param fromDate Optional start date in ISO format (default: now)
+ * @param toDate Optional end date in ISO format (default: 7 days from now)
+ * @param calendarName Optional calendar name (all calendars if not specified)
  */
 async function getEvents(
   limit = 10,
@@ -370,143 +309,21 @@ async function getEvents(
   toDate?: string,
   calendarName?: string,
 ): Promise<CalendarEvent[]> {
-  try {
-    console.error("getEvents - Starting to fetch calendar events");
+  const normalizedLimit = Math.max(0, Math.trunc(limit));
 
-    if (!(await checkCalendarAccess())) {
-      console.error("getEvents - Failed to access Calendar app");
-      return [];
-    }
-    console.error("getEvents - Calendar access check passed");
+  const events = await executeEventKitScript<CalendarEvent[]>(`
+    var requestedLimit = ${normalizedLimit};
+    var fromDateInput = ${toOptionalStringExpression(fromDate)};
+    var toDateInput = ${toOptionalStringExpression(toDate)};
+    var targetCalendarName = ${toOptionalStringExpression(calendarName)};
 
-    const fromDateExpression = toOptionalStringExpression(fromDate);
-    const toDateExpression = toOptionalStringExpression(toDate);
-    const calendarNameExpression = toOptionalStringExpression(calendarName);
-    const normalizedLimit = Math.max(0, Math.trunc(limit));
+    var range = parseRange(fromDateInput, toDateInput, 7);
+    var events = queryEventKit(range.start, range.end, targetCalendarName, null);
 
-    const events = await executeCalendarScript<CalendarEvent[]>(`
-      var Calendar = Application("Calendar");
-      var requestedLimit = ${normalizedLimit};
-      var fromDateInput = ${fromDateExpression};
-      var toDateInput = ${toDateExpression};
-      var targetCalendarName = ${calendarNameExpression};
-      var maxEventsPerCalendar = ${CONFIG.MAX_EVENTS_PER_CALENDAR};
+    return JSON.stringify(events.slice(0, requestedLimit));
+  `);
 
-      var today = new Date();
-      var rangeStart = fromDateInput ? new Date(fromDateInput) : today;
-      var rangeEnd = toDateInput
-        ? new Date(toDateInput)
-        : new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-      if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
-        throw new Error("Invalid date range");
-      }
-
-      var calendars = targetCalendarName
-        ? Calendar.calendars.whose({ name: targetCalendarName })()
-        : Calendar.calendars();
-      var allEvents = [];
-      var seenIds = {};
-
-      function readEventData(event, calendarName) {
-        return {
-          uid: ${JXAConverters.toString(
-            JXAConverters.safeGet("event", "uid", "null"),
-            '"unknown-" + Date.now() + "-" + Math.random()',
-          )},
-          title: ${JXAConverters.toString(
-            JXAConverters.safeGet("event", "summary", '""'),
-            '"Unknown Title"',
-          )},
-          location: ${JXAConverters.toString(
-            JXAConverters.safeGet("event", "location", "null"),
-            "null",
-          )},
-          notes: ${JXAConverters.toString(
-            JXAConverters.safeGet("event", "description", "null"),
-            "null",
-          )},
-          evStart: ${JXAConverters.safeGet("event", "startDate", "null")},
-          evEnd: ${JXAConverters.safeGet("event", "endDate", "null")},
-          calendarName: calendarName,
-          isAllDay: Boolean(${JXAConverters.safeGet("event", "alldayEvent", "false")}),
-          url: ${JXAConverters.toString(
-            JXAConverters.safeGet("event", "url", "null"),
-            "null",
-          )},
-          rrule: (function() { try { return event.recurrence(); } catch(_) { return null; } })(),
-        };
-      }
-
-      function toResult(info, startOverride, endOverride) {
-        var s = startOverride || info.evStart;
-        var e = endOverride || info.evEnd;
-        return {
-          id: info.uid, title: info.title, location: info.location, notes: info.notes,
-          startDate: s instanceof Date && !Number.isNaN(s.getTime()) ? s.toISOString() : null,
-          endDate: e instanceof Date && !Number.isNaN(e.getTime()) ? e.toISOString() : null,
-          calendarName: info.calendarName, isAllDay: info.isAllDay, url: info.url,
-        };
-      }
-
-      for (var i = 0; i < calendars.length; i++) {
-        try {
-          var calendar = calendars[i];
-          var calendarName = ${JXAConverters.toString("calendar.name()", '""')};
-
-          // Fetch events overlapping the date range.
-          // This query returns events where startDate < rangeEnd AND
-          // endDate > rangeStart, which captures all events that overlap.
-          // Note: recurring events whose original start is before rangeStart
-          // won't be found here — JXA doesn't support filtering on recurrence.
-          // We expand recurrence for any recurring events that do match.
-          var candidates = calendar.events.whose({
-            _and: [
-              { startDate: { _lessThan: rangeEnd } },
-              { endDate: { _greaterThan: rangeStart } },
-            ],
-          })();
-          var candidateCount = Math.min(candidates.length, maxEventsPerCalendar);
-
-          for (var j = 0; j < candidateCount; j++) {
-            try {
-              var info = readEventData(candidates[j], calendarName);
-              if (seenIds[info.uid]) continue;
-              seenIds[info.uid] = true;
-
-              if (info.rrule && info.evStart && info.evEnd) {
-                // Recurring event: expand occurrences within range
-                var occurrences = expandOccurrences(info.evStart, info.evEnd, info.rrule, rangeStart, rangeEnd);
-                for (var o = 0; o < occurrences.length; o++) {
-                  allEvents.push(toResult(info, occurrences[o].start, occurrences[o].end));
-                }
-              } else if (info.evStart && info.evStart >= rangeStart && info.evStart <= rangeEnd) {
-                // Non-recurring: include if start is within range
-                allEvents.push(toResult(info, null, null));
-              }
-            } catch (_) {}
-          }
-        } catch (_) {}
-      }
-
-      // Sort by startDate, then limit
-      allEvents.sort(function(a, b) {
-        return (a.startDate || "").localeCompare(b.startDate || "");
-      });
-
-      return JSON.stringify(allEvents.slice(0, requestedLimit));
-    `);
-
-    if (!Array.isArray(events) || events.length === 0) {
-      console.error("getEvents - No events found");
-      return [];
-    }
-
-    return events;
-  } catch (error) {
-    console.error(`Error getting events: ${error instanceof Error ? error.message : String(error)}`);
-    return [];
-  }
+  return Array.isArray(events) ? events : [];
 }
 
 /**

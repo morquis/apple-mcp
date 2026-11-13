@@ -464,7 +464,7 @@ const CONTACTS_TOOL: Tool = {
   
 const CALENDAR_TOOL: Tool = {
   name: "calendar",
-  description: "Search, create, and open calendar events in Apple Calendar app. PERFORMANCE: For 'search' and 'list', always specify 'calendarName' to avoid scanning all calendars — Exchange/IMAP calendars with thousands of events take 30-90s each. Ask the user which calendar to use.",
+  description: "Search, create, and open calendar events in Apple Calendar app. 'search' and 'list' use EventKit: they return occurrences of recurring events within the range, cover all calendars quickly when 'calendarName' is omitted, and report errors (missing calendar access, unknown calendar name) as errors rather than as an empty result.",
   inputSchema: {
     type: "object",
     properties: {
@@ -519,7 +519,7 @@ const CALENDAR_TOOL: Tool = {
       },
       calendarName: {
         type: "string",
-        description: "Name of the calendar to search/list/create in (optional, searches all calendars if not specified). Recommended for search/list on Exchange calendars to avoid timeouts."
+        description: "Name of the calendar to search/list/create in (optional, searches all calendars if not specified). All calendars with this exact name are included (e.g. one per account)."
       }
     },
     required: ["operation"]

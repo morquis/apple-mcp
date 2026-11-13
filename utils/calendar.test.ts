@@ -14,25 +14,32 @@ describe("calendar", () => {
     mock.restore();
   });
 
-  it("searchEvents returns an empty array when calendar access fails", async () => {
+  it("searchEvents propagates script errors instead of returning an empty list", async () => {
     const executeJXASpy = spyOn(jxaBridge, "executeJXA");
-    executeJXASpy.mockImplementation(() => Promise.reject(new Error("denied")) as never);
+    executeJXASpy.mockImplementation(() => Promise.reject(new Error("timed out")) as never);
 
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
 
     const calendar = await importCalendar();
-    const result = await calendar.searchEvents("trip");
-
-    expect(result).toEqual([]);
+    await expect(calendar.searchEvents("trip")).rejects.toThrow("timed out");
     expect(executeJXASpy).toHaveBeenCalledTimes(1);
-    expect(String(executeJXASpy.mock.calls[0]?.[0])).toContain('Application("Calendar")');
+  });
+
+  it("getEvents propagates script errors instead of returning an empty list", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockImplementation(() => Promise.reject(new Error("Calendar access denied")) as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const calendar = await importCalendar();
+    await expect(calendar.getEvents(5)).rejects.toThrow("Calendar access denied");
   });
 
   it("searchEvents escapes search text and date arguments before executing JXA", async () => {
     const executeJXASpy = spyOn(jxaBridge, "executeJXA");
     executeJXASpy
-      .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce([
         {
           id: "event-1",
@@ -72,11 +79,13 @@ describe("calendar", () => {
       },
     ]);
 
-    const script = String(executeJXASpy.mock.calls[1]?.[0]);
+    expect(executeJXASpy).toHaveBeenCalledTimes(1);
+    const script = String(executeJXASpy.mock.calls[0]?.[0]);
     expect(script).toContain('var searchText = "Plan \\"trip\\"\\nsoon"');
     expect(script).toContain('var fromDateInput = "2026-04-14T09:00:00.000Z"');
     expect(script).toContain('var toDateInput = "2026-05-14T09:00:00.000Z"');
-    expect(script).toContain("expandOccurrences");
+    expect(script).toContain("eventsMatchingPredicate");
+    expect(script).not.toContain("expandOccurrences");
   });
 
   it("openEvent opens a matching event by escaped id", async () => {
@@ -108,7 +117,6 @@ describe("calendar", () => {
   it("getEvents serializes date arguments through the bridge-backed script", async () => {
     const executeJXASpy = spyOn(jxaBridge, "executeJXA");
     executeJXASpy
-      .mockResolvedValueOnce(true as never)
       .mockResolvedValueOnce([
         {
           id: "event-2",
@@ -147,10 +155,12 @@ describe("calendar", () => {
       },
     ]);
 
-    const script = String(executeJXASpy.mock.calls[1]?.[0]);
+    expect(executeJXASpy).toHaveBeenCalledTimes(1);
+    const script = String(executeJXASpy.mock.calls[0]?.[0]);
     expect(script).toContain('var fromDateInput = "2026-04-15T00:00:00.000Z"');
     expect(script).toContain('var toDateInput = "2026-04-22T23:59:59.000Z"');
-    expect(script).toContain("expandOccurrences");
+    expect(script).toContain("eventsMatchingPredicate");
+    expect(script).not.toContain("expandOccurrences");
   });
 
   it("createEvent escapes user inputs and interpolates date strings into the JXA script", async () => {
