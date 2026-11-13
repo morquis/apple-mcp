@@ -90,12 +90,10 @@ describe("calendar", () => {
 
   it("openEvent opens a matching event by escaped id", async () => {
     const executeJXASpy = spyOn(jxaBridge, "executeJXA");
-    executeJXASpy
-      .mockResolvedValueOnce(true as never)
-      .mockResolvedValueOnce({
-        success: true,
-        message: 'Successfully opened event: Demo "Day"',
-      } as never);
+    executeJXASpy.mockResolvedValueOnce({
+      success: true,
+      message: 'Successfully opened event: Demo "Day"',
+    } as never);
 
     const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
     wrapJXAFunctionSpy.mockImplementation((script: string) => script);
@@ -108,10 +106,14 @@ describe("calendar", () => {
       message: 'Successfully opened event: Demo "Day"',
     });
 
-    const script = String(executeJXASpy.mock.calls[1]?.[0]);
-    expect(script).toContain('const eventId = "event-\\"123\\""');
+    expect(executeJXASpy).toHaveBeenCalledTimes(1);
+    const script = String(executeJXASpy.mock.calls[0]?.[0]);
+    expect(script).toContain('var eventId = "event-\\"123\\""');
+    expect(script).toContain("calendarItemWithIdentifier(eventId)");
+    expect(script).toContain("events.byId(eventId)");
     expect(script).toContain("event.show()");
     expect(script).toContain("Calendar.activate()");
+    expect(script).not.toContain("whose");
   });
 
   it("getEvents serializes date arguments through the bridge-backed script", async () => {
@@ -161,6 +163,20 @@ describe("calendar", () => {
     expect(script).toContain('var toDateInput = "2026-04-22T23:59:59.000Z"');
     expect(script).toContain("eventsMatchingPredicate");
     expect(script).not.toContain("expandOccurrences");
+  });
+
+  it("openEvent reports script errors as an unsuccessful result", async () => {
+    const executeJXASpy = spyOn(jxaBridge, "executeJXA");
+    executeJXASpy.mockImplementation(() => Promise.reject(new Error("Calendar access denied")) as never);
+
+    const wrapJXAFunctionSpy = spyOn(jxaBridge, "wrapJXAFunction");
+    wrapJXAFunctionSpy.mockImplementation((script: string) => script);
+
+    const calendar = await importCalendar();
+    const result = await calendar.openEvent("event-1");
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Calendar access denied");
   });
 
   it("createEvent escapes user inputs and interpolates date strings into the JXA script", async () => {
